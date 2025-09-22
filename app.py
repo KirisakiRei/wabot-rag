@@ -7,13 +7,13 @@ import logging
 
 app = Flask(__name__)
 
-
+# Load model embedding
 model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
 
-
+# Setup Qdrant client
 qdrant = QdrantClient(host=CONFIG["qdrant"]["host"], port=CONFIG["qdrant"]["port"])
 
-
+# Logging setup
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -24,38 +24,69 @@ def search():
         data = request.json
         question = data["question"]
         wa_number = data.get("wa_number", "unknown")
+        category = data.get("category")
+        min_similarity = 0.65
 
-        # Cari jawaban top 3
+        logger.info(f"[SEARCH] User={wa_number}, Question='{question}', Category={category}")
+
+        # Tambahkan filter kategori jika ada
+        query_filter = None
+        if category:
+            query_filter = models.Filter(
+                must=[models.FieldCondition(
+                    key="category",
+                    match=models.MatchValue(value=category)
+                )]
+            )
+            logger.info(f"[SEARCH] Filter kategori diterapkan: {category}")
+
+        # Cari jawaban di Qdrant
         hits = qdrant.search(
             collection_name="knowledge_bank",
             query_vector=model.encode(question).tolist(),
-            limit=3
+            limit=3,
+            query_filter=query_filter
         )
 
-        if not hits:
-            return jsonify({
-                "status": "not_found",
-                "message": "Tidak ditemukan pertanyaan yang relevan"
-            })
+        logger.info(f"[SEARCH] Total hasil dari Qdrant: {len(hits)}")
 
-        similar_questions = []
-        for hit in hits:
-            similar_questions.append({
+        if not hits:
+            msg = f"Tidak ada data ditemukan pada kategori {category}" if category else "Tidak ada data ditemukan"
+            logger.info(f"[SEARCH] {msg}")
+            return jsonify({"status": "not_found", "message": msg})
+
+        # Filter berdasarkan similarity threshold
+        filtered_hits = [h for h in hits if h.score >= min_similarity]
+
+        logger.info(f"[SEARCH] Hasil setelah filter similarity >= {min_similarity}: {len(filtered_hits)}")
+        for h in filtered_hits:
+            logger.info(f"   - ID={h.id}, Score={h.score:.4f}, Category={h.payload.get('category')}")
+
+        if not filtered_hits:
+            msg = f"Tidak ada hasil cukup relevan di kategori {category}" if category else "Tidak ada hasil cukup relevan"
+            return jsonify({"status": "low_confidence", "message": msg})
+
+        # Format jawaban
+        similar_questions = [
+            {
                 "id": hit.id,
                 "question": hit.payload["question"],
                 "answer": hit.payload["answer"],
                 "category": hit.payload.get("category"),
                 "similarity_score": hit.score
-            })
+            }
+            for hit in filtered_hits
+        ]
 
         return jsonify({
             "status": "success",
             "data": {
                 "similar_questions": similar_questions,
                 "metadata": {
-                    "total_found": len(hits),
+                    "total_found": len(similar_questions),
                     "wa_number": wa_number,
-                    "original_question": question
+                    "original_question": question,
+                    "category_used": category
                 }
             }
         })
@@ -63,7 +94,6 @@ def search():
     except Exception as e:
         logger.error(f"Error in search: {str(e)}")
         return jsonify({"status": "error", "message": str(e)}), 500
-
 
 # --- API WA Management ---
 @app.route("/api/sync", methods=["POST"])
