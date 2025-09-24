@@ -294,14 +294,33 @@ Untuk memastikan konsistensi data:
 ```bash
 curl -X POST http://localhost:5000/api/search \
   -H "Content-Type: application/json" \
-  -d '{"question": "apa itu KIS?", "wa_number": "628123456789"}'
+  -d '{
+    "question": "cara buat KTP?",
+    "wa_number": "628123456789"
+  }'
+
 ```
 
 ### Bulk Sync
 ```bash
 curl -X POST http://localhost:5000/api/sync \
   -H "Content-Type: application/json" \
-  -d '{"action": "bulk_sync", "content": [{"id":1,"question":"Apa itu KIS?","answer_id":200}]}'
+  -d '{
+    "action": "bulk_sync",
+    "content": [
+      {
+        "id": 1,
+        "question": "Bagaimana cara membuat KTP?",
+        "answer_id": 101
+      },
+      {
+        "id": 2,
+        "question": "Bagaimana cara mengurus KK?",
+        "answer_id": 102
+      }
+    ]
+  }'
+
 ```
 
 ---
