@@ -71,7 +71,6 @@ def search():
         # Format hasil
         similar_questions = [
             {
-                "id": hit.id,
                 "question": hit.payload["question"],
                 "answer_id": hit.payload["answer_id"],
                 "similarity_score": hit.score
