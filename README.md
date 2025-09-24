@@ -40,7 +40,6 @@ POST /api/search
   "data": {
     "similar_questions": [
       {
-        "id": 15,
         "question": "Bagaimana cara membuat KTP baru?",
         "answer_id": 101,
         "similarity_score": 0.8123
