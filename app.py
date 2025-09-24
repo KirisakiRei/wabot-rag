@@ -17,62 +17,63 @@ qdrant = QdrantClient(host=CONFIG["qdrant"]["host"], port=CONFIG["qdrant"]["port
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# --- Helper untuk error response ---
+def error_response(error_type, message, detail=None, code=500):
+    payload = {
+        "status": "error",
+        "error": {
+            "type": error_type,
+            "message": message
+        }
+    }
+    if detail:
+        payload["error"]["detail"] = detail
+    return jsonify(payload), code
+
+
 # --- API WA Bot ---
 @app.route("/api/search", methods=["POST"])
 def search():
     try:
         data = request.json
+        if not data or "question" not in data:
+            return error_response("ValidationError", "Field 'question' wajib diisi", code=400)
+
         question = data["question"]
         wa_number = data.get("wa_number", "unknown")
-        category = data.get("category")
         min_similarity = 0.65
 
-        logger.info(f"[SEARCH] User={wa_number}, Question='{question}', Category={category}")
-
-        # Tambahkan filter kategori jika ada
-        query_filter = None
-        if category:
-            query_filter = models.Filter(
-                must=[models.FieldCondition(
-                    key="category",
-                    match=models.MatchValue(value=category)
-                )]
-            )
-            logger.info(f"[SEARCH] Filter kategori diterapkan: {category}")
+        logger.info(f"[SEARCH] User={wa_number}, Question='{question}'")
 
         # Cari jawaban di Qdrant
         hits = qdrant.search(
             collection_name="knowledge_bank",
             query_vector=model.encode(question).tolist(),
-            limit=3,
-            query_filter=query_filter
+            limit=3
         )
 
-        logger.info(f"[SEARCH] Total hasil dari Qdrant: {len(hits)}")
-
         if not hits:
-            msg = f"Tidak ada data ditemukan pada kategori {category}" if category else "Tidak ada data ditemukan"
+            msg = "Tidak ada data ditemukan"
             logger.info(f"[SEARCH] {msg}")
-            return jsonify({"status": "not_found", "message": msg})
+            return jsonify({"status": "not_found", "message": msg}), 404
 
         # Filter berdasarkan similarity threshold
         filtered_hits = [h for h in hits if h.score >= min_similarity]
 
         logger.info(f"[SEARCH] Hasil setelah filter similarity >= {min_similarity}: {len(filtered_hits)}")
         for h in filtered_hits:
-            logger.info(f"   - ID={h.id}, Score={h.score:.4f}, Category={h.payload.get('category')}")
+            logger.info(f"   - ID={h.id}, Score={h.score:.4f}")
 
         if not filtered_hits:
-            msg = f"Tidak ada hasil cukup relevan di kategori {category}" if category else "Tidak ada hasil cukup relevan"
-            return jsonify({"status": "low_confidence", "message": msg})
+            msg = "Tidak ada hasil cukup relevan untuk pertanyaan Anda."
+            return jsonify({"status": "low_confidence", "message": msg}), 200
 
-        # Format jawaban
+        # Format hasil
         similar_questions = [
             {
                 "id": hit.id,
                 "question": hit.payload["question"],
-                "answer": hit.payload["answer"],
-                "category": hit.payload.get("category"),
+                "answer_id": hit.payload["answer_id"],
                 "similarity_score": hit.score
             }
             for hit in filtered_hits
@@ -85,29 +86,34 @@ def search():
                 "metadata": {
                     "total_found": len(similar_questions),
                     "wa_number": wa_number,
-                    "original_question": question,
-                    "category_used": category
+                    "original_question": question
                 }
             }
         })
 
     except Exception as e:
-        logger.error(f"Error in search: {str(e)}")
-        return jsonify({"status": "error", "message": str(e)}), 500
+        logger.error(f"Error in search: {str(e)}", exc_info=True)
+        return error_response("ServerError", "Terjadi kesalahan internal pada server", detail=str(e))
+
 
 # --- API WA Management ---
 @app.route("/api/sync", methods=["POST"])
 def sync_data():
     try:
         data = request.json
+        if not data or "action" not in data:
+            return error_response("ValidationError", "Field 'action' wajib diisi", code=400)
+
         action = data["action"]
         content = data.get("content")
 
         # Bulk sync semua data
         if action == "bulk_sync":
-            data_list = content
+            if not isinstance(content, list):
+                return error_response("ValidationError", "Content harus berupa list untuk bulk_sync", code=400)
+
             points = []
-            for item in data_list:
+            for item in content:
                 vector = model.encode(item["question"]).tolist()
                 points.append({
                     "id": item["id"],
@@ -115,8 +121,7 @@ def sync_data():
                     "payload": {
                         "mysql_id": item["id"],
                         "question": item["question"],
-                        "answer": item["answer"],
-                        "category": item.get("category")
+                        "answer_id": item["answer_id"]
                     }
                 })
             qdrant.upsert(collection_name="knowledge_bank", points=points)
@@ -139,8 +144,7 @@ def sync_data():
                     "payload": {
                         "mysql_id": mysql_id,
                         "question": content["question"],
-                        "answer": content["answer"],
-                        "category": content.get("category")
+                        "answer_id": content["answer_id"]
                     }
                 }]
             )
@@ -159,8 +163,7 @@ def sync_data():
                     "payload": {
                         "mysql_id": mysql_id,
                         "question": content["question"],
-                        "answer": content["answer"],
-                        "category": content.get("category")
+                        "answer_id": content["answer_id"]
                     }
                 }]
             )
@@ -181,14 +184,14 @@ def sync_data():
                 return jsonify({"status": "success", "message": "Data berhasil dihapus dari Knowledge Bank"})
             except Exception as delete_error:
                 logger.error(f"Failed to delete data with ID {mysql_id}: {str(delete_error)}")
-                return jsonify({"status": "error", "message": f"Gagal menghapus data: {str(delete_error)}"}), 500
+                return error_response("DeleteError", f"Gagal menghapus data dengan ID {mysql_id}", detail=str(delete_error))
 
         else:
-            return jsonify({"status": "error", "message": f"Action '{action}' tidak dikenali"}), 400
+            return error_response("ValidationError", f"Action '{action}' tidak dikenali", code=400)
 
     except Exception as e:
-        logger.error(f"Error in sync_data: {str(e)}")
-        return jsonify({"status": "error", "message": str(e)}), 500
+        logger.error(f"Error in sync_data: {str(e)}", exc_info=True)
+        return error_response("ServerError", "Terjadi kesalahan internal saat sinkronisasi", detail=str(e))
 
 
 if __name__ == "__main__":
