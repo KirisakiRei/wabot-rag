@@ -57,24 +57,39 @@ def search():
             )
             logger.info(f"[SEARCH] Filter kategori diterapkan: {category_id}")
 
-        # Encode query dengan format E5
+        # Encode query (E5 format)
         query_vector = model.encode("query: " + question).tolist()
 
-        # Cari jawaban di Qdrant
-        hits = qdrant.search(
+        # HYBRID SEARCH: gabungkan semantic + keyword
+        hits = qdrant.query_points(
             collection_name="knowledge_bank",
-            query_vector=query_vector,
+            prefetch=[
+                # Semantic vector search
+                models.Prefetch(
+                    query=query_vector,
+                    limit=50
+                ),
+                # Keyword lexical search
+                models.Prefetch(
+                    query=models.MatchText(
+                        key="question",
+                        text=question
+                    ),
+                    limit=50
+                )
+            ],
+            fusion=models.Fusion.RRF,
             limit=3,
             query_filter=query_filter
         )
 
-        if not hits:
+        if not hits or not hits.points:
             msg = "Tidak ada data ditemukan"
             logger.info(f"[SEARCH] {msg}")
             return jsonify({"status": "not_found", "message": msg}), 404
 
         # Filter berdasarkan similarity threshold
-        filtered_hits = [h for h in hits if h.score >= min_similarity]
+        filtered_hits = [h for h in hits.points if h.score >= min_similarity]
 
         logger.info(f"[SEARCH] Hasil setelah filter similarity >= {min_similarity}: {len(filtered_hits)}")
         for h in filtered_hits:
