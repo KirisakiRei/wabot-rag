@@ -57,23 +57,25 @@ def search():
             )
             logger.info(f"[SEARCH] Filter kategori diterapkan: {category_id}")
 
-        # Hybrid search
+        # Encode query vector (dense)
         query_vector = model.encode("query: " + question).tolist()
 
+        # Hybrid Query (dense + BM25 text index)
+        fusion_query = models.FusionQuery(
+            query=models.Query(
+                vector=models.NamedVector(name="default", vector=query_vector),
+                filter=query_filter
+            ),
+            sparse=models.SparseVector(indices=[], values=[]),  # kosong dulu, tetap valid
+            text=models.TextQuery(text=question),  # ini BM25 di payload["question"]
+            fusion=models.Fusion.RRF
+        )
+
+        # Eksekusi query
         hits = qdrant.query_points(
             collection_name="knowledge_bank",
-            prefetch=[
-                models.Prefetch(
-                    query=models.NamedVector(name="default", vector=query_vector),
-                    limit=10
-                )
-            ],
-            query=models.FusionQuery(
-                query=question,  # langsung pakai teks untuk BM25
-                fusion=models.Fusion.RRF
-            ),
-            limit=3,
-            query_filter=query_filter
+            query=fusion_query,
+            limit=3
         )
 
         if not hits.points:
@@ -81,9 +83,10 @@ def search():
             logger.info(f"[SEARCH] {msg}")
             return jsonify({"status": "not_found", "message": msg}), 404
 
+        # Filter similarity
         filtered_hits = [h for h in hits.points if h.score >= min_similarity]
 
-        logger.info(f"[SEARCH] Hasil setelah filter similarity >= {min_similarity}: {len(filtered_hits)}")
+        logger.info(f"[SEARCH] Hasil setelah filter >= {min_similarity}: {len(filtered_hits)}")
         for h in filtered_hits:
             logger.info(f"   - ID={h.id}, Score={h.score:.4f}")
 
@@ -129,10 +132,10 @@ def sync_data():
         action = data["action"]
         content = data.get("content")
 
-        # Bulk sync semua data
+        # Bulk sync
         if action == "bulk_sync":
             if not isinstance(content, list):
-                return error_response("ValidationError", "Content harus berupa list untuk bulk_sync", code=400)
+                return error_response("ValidationError", "Content harus berupa list", code=400)
 
             points = []
             for item in content:
@@ -142,7 +145,7 @@ def sync_data():
                     "vector": vector,
                     "payload": {
                         "mysql_id": item["id"],
-                        "question": item["question"],  # penting untuk BM25
+                        "question": item["question"],  # penting buat BM25
                         "answer_id": item["answer_id"],
                         "category_id": item.get("category_id")
                     }
@@ -150,7 +153,7 @@ def sync_data():
 
             qdrant.upsert(collection_name="knowledge_bank", points=points)
 
-            # Register text index di field "question"
+            # Index BM25 di field "question"
             qdrant.create_payload_index(
                 collection_name="knowledge_bank",
                 field_name="question",
@@ -163,14 +166,14 @@ def sync_data():
                 )
             )
 
-            logger.info(f"Bulk sync completed: {len(points)} records synchronized + text index created")
+            logger.info(f"Bulk sync completed: {len(points)} records + text index created")
             return jsonify({
                 "status": "success",
-                "message": f"Berhasil sinkronisasi {len(points)} data Knowledge Bank (hybrid enabled)",
+                "message": f"Sinkronisasi {len(points)} data (hybrid enabled)",
                 "total_synced": len(points)
             })
 
-        # Tambah data baru
+        # Add
         elif action == "add":
             vector = model.encode("passage: " + content["question"]).tolist()
             mysql_id = content["id"]
@@ -187,10 +190,9 @@ def sync_data():
                     }
                 }]
             )
-            logger.info(f"Data added with ID: {mysql_id}")
             return jsonify({"status": "success", "message": "Data berhasil ditambahkan", "id": mysql_id})
 
-        # Update data
+        # Update
         elif action == "update":
             mysql_id = content["id"]
             vector = model.encode("passage: " + content["question"]).tolist()
@@ -207,10 +209,9 @@ def sync_data():
                     }
                 }]
             )
-            logger.info(f"Data updated with ID: {mysql_id}")
             return jsonify({"status": "success", "message": "Data berhasil diupdate"})
 
-        # Hapus data
+        # Delete
         elif action == "delete":
             mysql_id = int(content["id"])
             qdrant.delete(
@@ -218,7 +219,6 @@ def sync_data():
                 points_selector=models.PointIdsList(points=[mysql_id]),
                 wait=True
             )
-            logger.info(f"Data deleted with ID: {mysql_id}")
             return jsonify({"status": "success", "message": "Data berhasil dihapus"})
 
         else:
@@ -226,7 +226,7 @@ def sync_data():
 
     except Exception as e:
         logger.error(f"Error in sync_data: {str(e)}", exc_info=True)
-        return error_response("ServerError", "Terjadi kesalahan internal saat sinkronisasi", detail=str(e))
+        return error_response("ServerError", "Kesalahan internal saat sinkronisasi", detail=str(e))
 
 
 if __name__ == "__main__":
