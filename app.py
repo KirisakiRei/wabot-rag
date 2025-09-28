@@ -57,38 +57,30 @@ def search():
             )
             logger.info(f"[SEARCH] Filter kategori diterapkan: {category_id}")
 
-        # Encode query (E5 format)
+        # Hybrid search
         query_vector = model.encode("query: " + question).tolist()
 
-        # HYBRID SEARCH: gabungkan semantic + keyword
         hits = qdrant.query_points(
             collection_name="knowledge_bank",
             prefetch=[
-                # Semantic vector search
                 models.Prefetch(
-                    query=query_vector,
-                    limit=50
-                ),
-                # Keyword lexical search
-                models.Prefetch(
-                    query=models.MatchText(
-                        key="question",
-                        text=question
-                    ),
-                    limit=50
+                    query=models.NamedVector(name="default", vector=query_vector),
+                    limit=10
                 )
             ],
-            fusion=models.Fusion.RRF,
+            query=models.FusionQuery(
+                query=question,  # langsung pakai teks untuk BM25
+                fusion=models.Fusion.RRF
+            ),
             limit=3,
             query_filter=query_filter
         )
 
-        if not hits or not hits.points:
+        if not hits.points:
             msg = "Tidak ada data ditemukan"
             logger.info(f"[SEARCH] {msg}")
             return jsonify({"status": "not_found", "message": msg}), 404
 
-        # Filter berdasarkan similarity threshold
         filtered_hits = [h for h in hits.points if h.score >= min_similarity]
 
         logger.info(f"[SEARCH] Hasil setelah filter similarity >= {min_similarity}: {len(filtered_hits)}")
@@ -96,18 +88,16 @@ def search():
             logger.info(f"   - ID={h.id}, Score={h.score:.4f}")
 
         if not filtered_hits:
-            msg = "Tidak ada hasil cukup relevan untuk pertanyaan Anda."
-            return jsonify({"status": "low_confidence", "message": msg}), 200
+            return jsonify({"status": "low_confidence", "message": "Tidak ada hasil cukup relevan"}), 200
 
-        # Format hasil
         similar_questions = [
             {
-                "question": hit.payload["question"],
-                "answer_id": hit.payload["answer_id"],
-                "category_id": hit.payload.get("category_id"),
-                "similarity_score": hit.score
+                "question": h.payload["question"],
+                "answer_id": h.payload["answer_id"],
+                "category_id": h.payload.get("category_id"),
+                "similarity_score": h.score
             }
-            for hit in filtered_hits
+            for h in filtered_hits
         ]
 
         return jsonify({
@@ -152,16 +142,31 @@ def sync_data():
                     "vector": vector,
                     "payload": {
                         "mysql_id": item["id"],
-                        "question": item["question"],
+                        "question": item["question"],  # penting untuk BM25
                         "answer_id": item["answer_id"],
                         "category_id": item.get("category_id")
                     }
                 })
+
             qdrant.upsert(collection_name="knowledge_bank", points=points)
-            logger.info(f"Bulk sync completed: {len(points)} records synchronized")
+
+            # Register text index di field "question"
+            qdrant.create_payload_index(
+                collection_name="knowledge_bank",
+                field_name="question",
+                field_schema=models.TextIndexParams(
+                    type="text",
+                    tokenizer=models.TokenizerType.WORD,
+                    min_token_len=2,
+                    max_token_len=15,
+                    lowercase=True
+                )
+            )
+
+            logger.info(f"Bulk sync completed: {len(points)} records synchronized + text index created")
             return jsonify({
                 "status": "success",
-                "message": f"Berhasil sinkronisasi {len(points)} data Knowledge Bank",
+                "message": f"Berhasil sinkronisasi {len(points)} data Knowledge Bank (hybrid enabled)",
                 "total_synced": len(points)
             })
 
@@ -182,8 +187,8 @@ def sync_data():
                     }
                 }]
             )
-            logger.info(f"Data added to Knowledge Bank with ID: {mysql_id}")
-            return jsonify({"status": "success", "message": "Data berhasil ditambahkan ke Knowledge Bank", "id": mysql_id})
+            logger.info(f"Data added with ID: {mysql_id}")
+            return jsonify({"status": "success", "message": "Data berhasil ditambahkan", "id": mysql_id})
 
         # Update data
         elif action == "update":
@@ -202,24 +207,19 @@ def sync_data():
                     }
                 }]
             )
-            logger.info(f"Data updated in Knowledge Bank with ID: {mysql_id}")
-            return jsonify({"status": "success", "message": "Data berhasil diupdate di Knowledge Bank"})
+            logger.info(f"Data updated with ID: {mysql_id}")
+            return jsonify({"status": "success", "message": "Data berhasil diupdate"})
 
         # Hapus data
         elif action == "delete":
             mysql_id = int(content["id"])
-            try:
-                points_selector = models.PointIdsList(points=[mysql_id])
-                qdrant.delete(
-                    collection_name="knowledge_bank",
-                    points_selector=points_selector,
-                    wait=True
-                )
-                logger.info(f"Data deleted from Knowledge Bank with ID: {mysql_id}")
-                return jsonify({"status": "success", "message": "Data berhasil dihapus dari Knowledge Bank"})
-            except Exception as delete_error:
-                logger.error(f"Failed to delete data with ID {mysql_id}: {str(delete_error)}")
-                return error_response("DeleteError", f"Gagal menghapus data dengan ID {mysql_id}", detail=str(delete_error))
+            qdrant.delete(
+                collection_name="knowledge_bank",
+                points_selector=models.PointIdsList(points=[mysql_id]),
+                wait=True
+            )
+            logger.info(f"Data deleted with ID: {mysql_id}")
+            return jsonify({"status": "success", "message": "Data berhasil dihapus"})
 
         else:
             return error_response("ValidationError", f"Action '{action}' tidak dikenali", code=400)
