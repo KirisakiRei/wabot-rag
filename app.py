@@ -7,17 +7,13 @@ import logging
 
 app = Flask(__name__)
 
-# Load model embedding
+# Load model & qdrant client
 model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
-
-# Setup Qdrant client
 qdrant = QdrantClient(host=CONFIG["qdrant"]["host"], port=CONFIG["qdrant"]["port"])
 
-# Logging setup
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- Helper untuk error response ---
 def error_response(error_type, message, detail=None, code=500):
     payload = {
         "status": "error",
@@ -41,15 +37,28 @@ def search():
 
         question = data["question"]
         wa_number = data.get("wa_number", "unknown")
+        category_id = data.get("category_id")  # optional
         min_similarity = 0.65
 
-        logger.info(f"[SEARCH] User={wa_number}, Question='{question}'")
+        logger.info(f"[SEARCH] User={wa_number}, Question='{question}', CategoryID={category_id}")
+
+        # Tambahkan filter kategori jika category_id dikirim
+        query_filter = None
+        if category_id:
+            query_filter = models.Filter(
+                must=[models.FieldCondition(
+                    key="category_id",
+                    match=models.MatchValue(value=category_id)
+                )]
+            )
+            logger.info(f"[SEARCH] Filter kategori diterapkan: {category_id}")
 
         # Cari jawaban di Qdrant
         hits = qdrant.search(
             collection_name="knowledge_bank",
             query_vector=model.encode(question).tolist(),
-            limit=3
+            limit=3,
+            query_filter=query_filter
         )
 
         if not hits:
@@ -73,6 +82,7 @@ def search():
             {
                 "question": hit.payload["question"],
                 "answer_id": hit.payload["answer_id"],
+                "category_id": hit.payload.get("category_id"),
                 "similarity_score": hit.score
             }
             for hit in filtered_hits
@@ -85,7 +95,8 @@ def search():
                 "metadata": {
                     "total_found": len(similar_questions),
                     "wa_number": wa_number,
-                    "original_question": question
+                    "original_question": question,
+                    "category_used": category_id
                 }
             }
         })
@@ -120,7 +131,8 @@ def sync_data():
                     "payload": {
                         "mysql_id": item["id"],
                         "question": item["question"],
-                        "answer_id": item["answer_id"]
+                        "answer_id": item["answer_id"],
+                        "category_id": item.get("category_id")  # optional
                     }
                 })
             qdrant.upsert(collection_name="knowledge_bank", points=points)
@@ -143,7 +155,8 @@ def sync_data():
                     "payload": {
                         "mysql_id": mysql_id,
                         "question": content["question"],
-                        "answer_id": content["answer_id"]
+                        "answer_id": content["answer_id"],
+                        "category_id": content.get("category_id")
                     }
                 }]
             )
@@ -162,7 +175,8 @@ def sync_data():
                     "payload": {
                         "mysql_id": mysql_id,
                         "question": content["question"],
-                        "answer_id": content["answer_id"]
+                        "answer_id": content["answer_id"],
+                        "category_id": content.get("category_id")
                     }
                 }]
             )
