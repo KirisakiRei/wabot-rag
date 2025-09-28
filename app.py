@@ -7,13 +7,17 @@ import logging
 
 app = Flask(__name__)
 
-# Load model & qdrant client
-model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+# Load model E5
+model = SentenceTransformer("intfloat/multilingual-e5-small")
+
+# Setup Qdrant client
 qdrant = QdrantClient(host=CONFIG["qdrant"]["host"], port=CONFIG["qdrant"]["port"])
 
+# Logging setup
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# --- Helper untuk error response ---
 def error_response(error_type, message, detail=None, code=500):
     payload = {
         "status": "error",
@@ -42,7 +46,7 @@ def search():
 
         logger.info(f"[SEARCH] User={wa_number}, Question='{question}', CategoryID={category_id}")
 
-        # Tambahkan filter kategori jika category_id dikirim
+        # Tambahkan filter kategori jika ada
         query_filter = None
         if category_id:
             query_filter = models.Filter(
@@ -53,10 +57,13 @@ def search():
             )
             logger.info(f"[SEARCH] Filter kategori diterapkan: {category_id}")
 
+        # Encode query dengan format E5
+        query_vector = model.encode("query: " + question).tolist()
+
         # Cari jawaban di Qdrant
         hits = qdrant.search(
             collection_name="knowledge_bank",
-            query_vector=model.encode(question).tolist(),
+            query_vector=query_vector,
             limit=3,
             query_filter=query_filter
         )
@@ -124,7 +131,7 @@ def sync_data():
 
             points = []
             for item in content:
-                vector = model.encode(item["question"]).tolist()
+                vector = model.encode("passage: " + item["question"]).tolist()
                 points.append({
                     "id": item["id"],
                     "vector": vector,
@@ -132,7 +139,7 @@ def sync_data():
                         "mysql_id": item["id"],
                         "question": item["question"],
                         "answer_id": item["answer_id"],
-                        "category_id": item.get("category_id")  # optional
+                        "category_id": item.get("category_id")
                     }
                 })
             qdrant.upsert(collection_name="knowledge_bank", points=points)
@@ -145,7 +152,7 @@ def sync_data():
 
         # Tambah data baru
         elif action == "add":
-            vector = model.encode(content["question"]).tolist()
+            vector = model.encode("passage: " + content["question"]).tolist()
             mysql_id = content["id"]
             qdrant.upsert(
                 collection_name="knowledge_bank",
@@ -166,7 +173,7 @@ def sync_data():
         # Update data
         elif action == "update":
             mysql_id = content["id"]
-            vector = model.encode(content["question"]).tolist()
+            vector = model.encode("passage: " + content["question"]).tolist()
             qdrant.upsert(
                 collection_name="knowledge_bank",
                 points=[{
