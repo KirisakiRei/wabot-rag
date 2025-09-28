@@ -7,9 +7,8 @@ import logging
 
 app = Flask(__name__)
 
-# Load model E5
-model = SentenceTransformer("/home/kominfo/models/intfloat-multilingual-e5-small")
-
+# Load model E5 (pakai path lokal)
+model = SentenceTransformer("/home/kominfo/models/e5-small-local")
 
 # Setup Qdrant client
 qdrant = QdrantClient(host=CONFIG["qdrant"]["host"], port=CONFIG["qdrant"]["port"])
@@ -67,7 +66,7 @@ def search():
             query_filter=query_filter
         )
 
-        # --- Keyword search (fallback text search) ---
+        # --- Keyword search (BM25 sederhana pakai payload index) ---
         keyword_hits, _ = qdrant.scroll(
             collection_name="knowledge_bank",
             scroll_filter=models.Filter(
@@ -81,20 +80,19 @@ def search():
             limit=5
         )
 
-        # --- Gabungkan hasil (RRF sederhana) ---
+        # --- Gabungkan hasil (Reciprocal Rank Fusion) ---
         combined = {}
         for i, h in enumerate(dense_hits):
-            score = 1 / (i + 1)  # Reciprocal Rank Fusion
-            combined[h.id] = {"hit": h, "score": combined.get(h.id, {}).get("score", 0) + score}
+            score = 1 / (i + 1)
+            combined[str(h.id)] = {"hit": h, "score": combined.get(str(h.id), {}).get("score", 0) + score}
 
         for i, h in enumerate(keyword_hits):
             score = 1 / (i + 1)
-            if h.id in combined:
-                combined[h.id]["score"] += score
+            if str(h.id) in combined:
+                combined[str(h.id)]["score"] += score
             else:
-                combined[h.id] = {"hit": h, "score": score}
+                combined[str(h.id)] = {"hit": h, "score": score}
 
-        # Urutkan hasil
         sorted_hits = sorted(combined.values(), key=lambda x: x["score"], reverse=True)[:3]
 
         if not sorted_hits:
@@ -105,7 +103,6 @@ def search():
         for item in sorted_hits:
             h = item["hit"]
             score = item["score"]
-            # pakai .score kalau ada (dense), kalau tidak pakai skor gabungan
             raw_score = getattr(h, "score", score)
             if raw_score >= min_similarity:
                 results.append({
@@ -155,12 +152,13 @@ def sync_data():
             points = []
             for item in content:
                 vector = model.encode("passage: " + item["question"]).tolist()
+                point_id = str(item["id"])
                 points.append({
-                    "id": item["id"],
+                    "id": point_id,
                     "vector": vector,
                     "payload": {
-                        "mysql_id": item["id"],
-                        "question": item["question"],  # penting buat keyword search
+                        "mysql_id": point_id,
+                        "question": item["question"],
                         "answer_id": item["answer_id"],
                         "category_id": item.get("category_id")
                     }
@@ -168,7 +166,7 @@ def sync_data():
 
             qdrant.upsert(collection_name="knowledge_bank", points=points)
 
-            # index text untuk hybrid
+            # Index text
             qdrant.create_payload_index(
                 collection_name="knowledge_bank",
                 field_name="question",
@@ -189,34 +187,34 @@ def sync_data():
 
         # Add
         elif action == "add":
+            point_id = str(content["id"])
             vector = model.encode("passage: " + content["question"]).tolist()
-            mysql_id = content["id"]
             qdrant.upsert(
                 collection_name="knowledge_bank",
                 points=[{
-                    "id": mysql_id,
+                    "id": point_id,
                     "vector": vector,
                     "payload": {
-                        "mysql_id": mysql_id,
+                        "mysql_id": point_id,
                         "question": content["question"],
                         "answer_id": content["answer_id"],
                         "category_id": content.get("category_id")
                     }
                 }]
             )
-            return jsonify({"status": "success", "message": "Data berhasil ditambahkan", "id": mysql_id})
+            return jsonify({"status": "success", "message": "Data berhasil ditambahkan", "id": point_id})
 
         # Update
         elif action == "update":
-            mysql_id = content["id"]
+            point_id = str(content["id"])
             vector = model.encode("passage: " + content["question"]).tolist()
             qdrant.upsert(
                 collection_name="knowledge_bank",
                 points=[{
-                    "id": mysql_id,
+                    "id": point_id,
                     "vector": vector,
                     "payload": {
-                        "mysql_id": mysql_id,
+                        "mysql_id": point_id,
                         "question": content["question"],
                         "answer_id": content["answer_id"],
                         "category_id": content.get("category_id")
@@ -227,10 +225,10 @@ def sync_data():
 
         # Delete
         elif action == "delete":
-            mysql_id = int(content["id"])
+            point_id = str(content["id"])
             qdrant.delete(
                 collection_name="knowledge_bank",
-                points_selector=models.PointIdsList(points=[mysql_id]),
+                points_selector=models.PointIdsList(points=[point_id]),
                 wait=True
             )
             return jsonify({"status": "success", "message": "Data berhasil dihapus"})
