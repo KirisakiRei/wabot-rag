@@ -8,7 +8,8 @@ import logging
 app = Flask(__name__)
 
 # Load model E5
-model = SentenceTransformer("intfloat/multilingual-e5-small")
+model = SentenceTransformer("/home/kominfo/models/intfloat-multilingual-e5-small")
+
 
 # Setup Qdrant client
 qdrant = QdrantClient(host=CONFIG["qdrant"]["host"], port=CONFIG["qdrant"]["port"])
@@ -16,6 +17,7 @@ qdrant = QdrantClient(host=CONFIG["qdrant"]["host"], port=CONFIG["qdrant"]["port
 # Logging setup
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
 
 # --- Helper untuk error response ---
 def error_response(error_type, message, detail=None, code=500):
@@ -46,7 +48,7 @@ def search():
 
         logger.info(f"[SEARCH] User={wa_number}, Question='{question}', CategoryID={category_id}")
 
-        # Tambahkan filter kategori jika ada
+        # Filter kategori (opsional)
         query_filter = None
         if category_id:
             query_filter = models.Filter(
@@ -55,60 +57,73 @@ def search():
                     match=models.MatchValue(value=category_id)
                 )]
             )
-            logger.info(f"[SEARCH] Filter kategori diterapkan: {category_id}")
 
-        # Encode query vector (dense)
+        # --- Dense semantic search ---
         query_vector = model.encode("query: " + question).tolist()
-
-        # Hybrid Query (dense + BM25 text index)
-        fusion_query = models.FusionQuery(
-            query=models.Query(
-                vector=models.NamedVector(name="default", vector=query_vector),
-                filter=query_filter
-            ),
-            sparse=models.SparseVector(indices=[], values=[]),  # kosong dulu, tetap valid
-            text=models.TextQuery(text=question),  # ini BM25 di payload["question"]
-            fusion=models.Fusion.RRF
-        )
-
-        # Eksekusi query
-        hits = qdrant.query_points(
+        dense_hits = qdrant.search(
             collection_name="knowledge_bank",
-            query=fusion_query,
-            limit=3
+            query_vector=query_vector,
+            limit=5,
+            query_filter=query_filter
         )
 
-        if not hits.points:
-            msg = "Tidak ada data ditemukan"
-            logger.info(f"[SEARCH] {msg}")
-            return jsonify({"status": "not_found", "message": msg}), 404
+        # --- Keyword search (fallback text search) ---
+        keyword_hits, _ = qdrant.scroll(
+            collection_name="knowledge_bank",
+            scroll_filter=models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="question",
+                        match=models.MatchText(text=question)
+                    )
+                ]
+            ),
+            limit=5
+        )
 
-        # Filter similarity
-        filtered_hits = [h for h in hits.points if h.score >= min_similarity]
+        # --- Gabungkan hasil (RRF sederhana) ---
+        combined = {}
+        for i, h in enumerate(dense_hits):
+            score = 1 / (i + 1)  # Reciprocal Rank Fusion
+            combined[h.id] = {"hit": h, "score": combined.get(h.id, {}).get("score", 0) + score}
 
-        logger.info(f"[SEARCH] Hasil setelah filter >= {min_similarity}: {len(filtered_hits)}")
-        for h in filtered_hits:
-            logger.info(f"   - ID={h.id}, Score={h.score:.4f}")
+        for i, h in enumerate(keyword_hits):
+            score = 1 / (i + 1)
+            if h.id in combined:
+                combined[h.id]["score"] += score
+            else:
+                combined[h.id] = {"hit": h, "score": score}
 
-        if not filtered_hits:
+        # Urutkan hasil
+        sorted_hits = sorted(combined.values(), key=lambda x: x["score"], reverse=True)[:3]
+
+        if not sorted_hits:
+            return jsonify({"status": "not_found", "message": "Tidak ada data ditemukan"}), 404
+
+        # Ambil hasil dengan threshold
+        results = []
+        for item in sorted_hits:
+            h = item["hit"]
+            score = item["score"]
+            # pakai .score kalau ada (dense), kalau tidak pakai skor gabungan
+            raw_score = getattr(h, "score", score)
+            if raw_score >= min_similarity:
+                results.append({
+                    "question": h.payload["question"],
+                    "answer_id": h.payload["answer_id"],
+                    "category_id": h.payload.get("category_id"),
+                    "similarity_score": float(raw_score)
+                })
+
+        if not results:
             return jsonify({"status": "low_confidence", "message": "Tidak ada hasil cukup relevan"}), 200
-
-        similar_questions = [
-            {
-                "question": h.payload["question"],
-                "answer_id": h.payload["answer_id"],
-                "category_id": h.payload.get("category_id"),
-                "similarity_score": h.score
-            }
-            for h in filtered_hits
-        ]
 
         return jsonify({
             "status": "success",
             "data": {
-                "similar_questions": similar_questions,
+                "similar_questions": results,
                 "metadata": {
-                    "total_found": len(similar_questions),
+                    "total_found": len(results),
                     "wa_number": wa_number,
                     "original_question": question,
                     "category_used": category_id
@@ -145,7 +160,7 @@ def sync_data():
                     "vector": vector,
                     "payload": {
                         "mysql_id": item["id"],
-                        "question": item["question"],  # penting buat BM25
+                        "question": item["question"],  # penting buat keyword search
                         "answer_id": item["answer_id"],
                         "category_id": item.get("category_id")
                     }
@@ -153,7 +168,7 @@ def sync_data():
 
             qdrant.upsert(collection_name="knowledge_bank", points=points)
 
-            # Index BM25 di field "question"
+            # index text untuk hybrid
             qdrant.create_payload_index(
                 collection_name="knowledge_bank",
                 field_name="question",
@@ -166,7 +181,6 @@ def sync_data():
                 )
             )
 
-            logger.info(f"Bulk sync completed: {len(points)} records + text index created")
             return jsonify({
                 "status": "success",
                 "message": f"Sinkronisasi {len(points)} data (hybrid enabled)",
