@@ -32,6 +32,15 @@ def error_response(error_type, message, detail=None, code=500):
     return jsonify(payload), code
 
 
+# --- Helper untuk cek overlap kata ---
+def keyword_overlap(query: str, candidate: str) -> float:
+    q_tokens = set([w.lower() for w in query.split() if len(w) > 3])
+    c_tokens = set([w.lower() for w in candidate.split() if len(w) > 3])
+    if not q_tokens:
+        return 0
+    return len(q_tokens & c_tokens) / len(q_tokens)
+
+
 # --- API WA Bot ---
 @app.route("/api/search", methods=["POST"])
 def search():
@@ -40,10 +49,21 @@ def search():
         if not data or "question" not in data:
             return error_response("ValidationError", "Field 'question' wajib diisi", code=400)
 
-        question = data["question"]
+        question = data["question"].strip()
         wa_number = data.get("wa_number", "unknown")
         category_id = data.get("category_id")  # optional
-        min_similarity = 0.65
+
+        # Threshold minimal
+        min_similarity = 0.85
+        min_overlap = 0.3
+        min_final_score = 0.80
+
+        # Validasi panjang pertanyaan
+        if len(question.split()) < 2:
+            return jsonify({
+                "status": "low_confidence",
+                "message": "Pertanyaan terlalu singkat, mohon lebih spesifik"
+            }), 200
 
         logger.info(f"[SEARCH] User={wa_number}, Question='{question}', CategoryID={category_id}")
 
@@ -98,18 +118,22 @@ def search():
         if not sorted_hits:
             return jsonify({"status": "not_found", "message": "Tidak ada data ditemukan"}), 404
 
-        # Ambil hasil dengan threshold
+        # --- Seleksi hasil dengan threshold + overlap ---
         results = []
         for item in sorted_hits:
             h = item["hit"]
-            score = item["score"]
-            raw_score = getattr(h, "score", score)
-            if raw_score >= min_similarity:
+            dense_score = getattr(h, "score", 0.0)
+            overlap = keyword_overlap(question, h.payload["question"])
+            final_score = 0.7 * dense_score + 0.3 * overlap
+
+            if dense_score >= min_similarity and overlap >= min_overlap and final_score >= min_final_score:
                 results.append({
                     "question": h.payload["question"],
                     "answer_id": h.payload["answer_id"],
                     "category_id": h.payload.get("category_id"),
-                    "similarity_score": float(raw_score)
+                    "dense_score": float(dense_score),
+                    "overlap_score": float(overlap),
+                    "final_score": float(final_score)
                 })
 
         if not results:
