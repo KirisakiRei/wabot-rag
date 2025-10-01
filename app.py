@@ -7,46 +7,49 @@ import logging
 
 app = Flask(__name__)
 
-# Load model E5 (pakai path lokal)
+# ===== Model & Client =====
+# Pakai model lokal agar tidak download ulang
 model = SentenceTransformer("/home/kominfo/models/e5-small-local")
 
-# Setup Qdrant client
-qdrant = QdrantClient(host=CONFIG["qdrant"]["host"], port=CONFIG["qdrant"]["port"])
+qdrant = QdrantClient(
+    host=CONFIG["qdrant"]["host"],
+    port=CONFIG["qdrant"]["port"]
+)
 
-# Logging setup
+# ===== Logging =====
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Stopwords sederhana (bisa diperluas sesuai kebutuhan)
+# ===== Stopwords (untuk overlap booster ringan) =====
 STOPWORDS = {
     "apa", "bagaimana", "cara", "untuk", "dan", "atau", "yang", "dengan",
     "di", "ke", "dari", "buat", "mengurus", "membuat", "mendaftar", "dimana", "kapan",
     "berapa", "adalah", "itu", "ini", "saya", "kamu"
 }
 
-# --- Helper untuk error response ---
+# ===== Helpers =====
 def error_response(error_type, message, detail=None, code=500):
-    payload = {
-        "status": "error",
-        "error": {"type": error_type, "message": message}
-    }
+    payload = {"status": "error", "error": {"type": error_type, "message": message}}
     if detail:
         payload["error"]["detail"] = detail
     return jsonify(payload), code
 
-# --- Helper overlap dengan stopword removal ---
 def tokenize_and_filter(text: str):
+    # lowercase, split sederhana; buang stopwords & token sangat pendek
     return [w.lower() for w in text.split() if w.lower() not in STOPWORDS and len(w) > 2]
 
 def keyword_overlap(query: str, candidate: str) -> float:
+    """
+    Overlap Jaccard (0..1) setelah stopword removal.
+    Dipakai hanya sebagai booster kecil, bukan filter keras.
+    """
     q_tokens = set(tokenize_and_filter(query))
     c_tokens = set(tokenize_and_filter(candidate))
     if not q_tokens or not c_tokens:
         return 0.0
-    # pakai Jaccard agar stabil
     return len(q_tokens & c_tokens) / len(q_tokens | c_tokens)
 
-# --- API WA Bot ---
+# ===== API: WA Bot =====
 @app.route("/api/search", methods=["POST"])
 def search():
     try:
@@ -58,10 +61,10 @@ def search():
         wa_number = data.get("wa_number", "unknown")
         category_id = data.get("category_id")  # optional
 
-        # Threshold minimal
-        min_similarity = 0.85
-        min_overlap = 0.3
-        min_final_score = 0.80
+        # --- Threshold & bobot (disetel supaya dense jadi faktor utama) ---
+        DENSE_ACCEPT = 0.88          # jika dense >= ini → langsung lolos meski overlap rendah
+        FINAL_ACCEPT = 0.85          # kalau final >= ini → lolos
+        OVERLAP_ALPHA = 0.15         # booster overlap kecil (dense + alpha*overlap)
 
         # Validasi panjang pertanyaan
         if len(question.split()) < 2:
@@ -82,7 +85,7 @@ def search():
                 )]
             )
 
-        # --- Dense semantic search ---
+        # --- Dense semantic search (E5) ---
         query_vector = model.encode("query: " + question).tolist()
         dense_hits = qdrant.search(
             collection_name="knowledge_bank",
@@ -91,7 +94,8 @@ def search():
             query_filter=query_filter
         )
 
-        # --- Keyword search (BM25 sederhana via scroll + text index) ---
+        # --- Keyword search (text index via MatchText) ---
+        # Catatan: ini bukan BM25 murni, tapi text index Qdrant cukup membantu kata kunci literal
         keyword_hits, _ = qdrant.scroll(
             collection_name="knowledge_bank",
             scroll_filter=models.Filter(
@@ -103,56 +107,70 @@ def search():
             limit=5
         )
 
-        # --- Gabungkan hasil (Reciprocal Rank Fusion) ---
+        # --- Gabungkan kandidat via RRF sederhana ---
         combined = {}
         for i, h in enumerate(dense_hits):
-            score = 1 / (i + 1)
-            combined[str(h.id)] = {"hit": h, "score": combined.get(str(h.id), {}).get("score", 0) + score}
+            rrf_score = 1 / (i + 1)
+            combined[str(h.id)] = {"hit": h, "rrf": combined.get(str(h.id), {}).get("rrf", 0) + rrf_score}
 
         for i, h in enumerate(keyword_hits):
-            score = 1 / (i + 1)
+            rrf_score = 1 / (i + 1)
             if str(h.id) in combined:
-                combined[str(h.id)]["score"] += score
+                combined[str(h.id)]["rrf"] += rrf_score
             else:
-                combined[str(h.id)] = {"hit": h, "score": score}
+                combined[str(h.id)] = {"hit": h, "rrf": rrf_score}
 
-        sorted_hits = sorted(combined.values(), key=lambda x: x["score"], reverse=True)[:3]
+        # Ambil top-N gabungan untuk dinilai dengan skor akhir
+        top_items = sorted(combined.values(), key=lambda x: x["rrf"], reverse=True)[:3]
 
-        if not sorted_hits:
+        if not top_items:
             return jsonify({"status": "not_found", "message": "Tidak ada data ditemukan"}), 404
 
-        # --- Seleksi hasil dengan threshold + overlap ---
         results = []
-        rejected = []  # simpan yang ditolak untuk logging
-        for item in sorted_hits:
-            h = item["hit"]
-            dense_score = getattr(h, "score", 0.0)
-            overlap = keyword_overlap(question, h.payload["question"])
-            final_score = 0.7 * dense_score + 0.3 * overlap
+        debug_candidates = []
 
-            if dense_score >= min_similarity and overlap >= min_overlap and final_score >= min_final_score:
+        for item in top_items:
+            h = item["hit"]
+            dense_score = float(getattr(h, "score", 0.0))  # pada hasil keyword, .score mungkin tidak ada
+            overlap = float(keyword_overlap(question, h.payload["question"]))
+            final_score = dense_score + OVERLAP_ALPHA * overlap
+
+            debug_candidates.append({
+                "id": str(h.id),
+                "question": h.payload.get("question"),
+                "dense_score": round(dense_score, 4),
+                "overlap_score": round(overlap, 4),
+                "final_score": round(final_score, 4)
+            })
+
+            # Aturan lolos:
+            # 1) Dense sangat tinggi → lolos langsung (robust ke sinonim)
+            # 2) Jika tidak, pakai final_score (dense + booster overlap)
+            if dense_score >= DENSE_ACCEPT or final_score >= FINAL_ACCEPT:
                 results.append({
                     "question": h.payload["question"],
                     "answer_id": h.payload["answer_id"],
                     "category_id": h.payload.get("category_id"),
-                    "dense_score": float(dense_score),
-                    "overlap_score": float(overlap),
-                    "final_score": float(final_score)
-                })
-            else:
-                rejected.append({
-                    "question": h.payload["question"],
-                    "dense_score": float(dense_score),
-                    "overlap_score": float(overlap),
-                    "final_score": float(final_score)
+                    "dense_score": dense_score,
+                    "overlap_score": overlap,
+                    "final_score": final_score
                 })
 
         if not results:
-            # Log jawaban yang ditolak
-            for r in rejected:
-                logger.info(f"[REJECTED] Q='{r['question']}' | dense={r['dense_score']:.3f}, "
-                            f"overlap={r['overlap_score']:.3f}, final={r['final_score']:.3f}")
-            return jsonify({"status": "low_confidence", "message": "Tidak ada hasil cukup relevan"}), 200
+            # Kirim debug score supaya mudah tuning di sisi klien/log
+            logger.info(f"[LOW_CONF] DEBUG CANDIDATES: {debug_candidates}")
+            return jsonify({
+                "status": "low_confidence",
+                "message": "Tidak ada hasil cukup relevan",
+                "debug": {
+                    "thresholds": {
+                        "dense_accept": DENSE_ACCEPT,
+                        "final_accept": FINAL_ACCEPT,
+                        "overlap_alpha": OVERLAP_ALPHA
+                    },
+                    "candidates": debug_candidates
+                }
+            }), 200
 
         return jsonify({
             "status": "success",
@@ -171,7 +189,7 @@ def search():
         logger.error(f"Error in search: {str(e)}", exc_info=True)
         return error_response("ServerError", "Terjadi kesalahan internal pada server", detail=str(e))
 
-# --- API WA Management ---
+# ===== API: WA Management (sync) =====
 @app.route("/api/sync", methods=["POST"])
 def sync_data():
     try:
@@ -182,7 +200,6 @@ def sync_data():
         action = data["action"]
         content = data.get("content")
 
-        # Bulk sync
         if action == "bulk_sync":
             if not isinstance(content, list):
                 return error_response("ValidationError", "Content harus berupa list", code=400)
@@ -196,7 +213,7 @@ def sync_data():
                     "vector": vector,
                     "payload": {
                         "mysql_id": point_id,
-                        "question": item["question"],
+                        "question": item["question"],   # penting untuk text index
                         "answer_id": item["answer_id"],
                         "category_id": item.get("category_id")
                     }
@@ -204,7 +221,7 @@ def sync_data():
 
             qdrant.upsert(collection_name="knowledge_bank", points=points)
 
-            # Index text (untuk MatchText)
+            # Pastikan ada text index utk field 'question'
             qdrant.create_payload_index(
                 collection_name="knowledge_bank",
                 field_name="question",
@@ -217,14 +234,13 @@ def sync_data():
                 )
             )
 
-            logger.info(f"[SYNC] Selesai: {len(points)} data disinkronisasi")
+            logger.info(f"[SYNC] {len(points)} data disinkronisasi + text index OK")
             return jsonify({
                 "status": "success",
                 "message": f"Sinkronisasi {len(points)} data berhasil",
                 "total_synced": len(points)
             })
 
-        # Add
         elif action == "add":
             point_id = str(content["id"])
             vector = model.encode("passage: " + content["question"]).tolist()
@@ -243,7 +259,6 @@ def sync_data():
             )
             return jsonify({"status": "success", "message": "Data berhasil ditambahkan", "id": point_id})
 
-        # Update
         elif action == "update":
             point_id = str(content["id"])
             vector = model.encode("passage: " + content["question"]).tolist()
@@ -262,7 +277,6 @@ def sync_data():
             )
             return jsonify({"status": "success", "message": "Data berhasil diupdate"})
 
-        # Delete
         elif action == "delete":
             point_id = str(content["id"])
             qdrant.delete(
