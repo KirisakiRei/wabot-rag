@@ -54,10 +54,6 @@ def search():
         wa_number = data.get("wa_number", "unknown")
         category_id = data.get("category_id")
 
-        # Threshold minimal
-        min_similarity = 0.80
-        min_final_score = 0.75
-
         if len(question.split()) < 2:
             return jsonify({
                 "status": "low_confidence",
@@ -120,37 +116,33 @@ def search():
             h = item["hit"]
             dense_score = getattr(h, "score", 0.0)
             overlap = keyword_overlap(question, h.payload["question"])
-            final_score = dense_score + (0.1 * overlap)
 
-            # Rule auto accept
+            accepted = False
+            note = None
+
             if dense_score >= 0.90:
-                results.append({
-                    "question": h.payload["question"],
-                    "answer_id": h.payload["answer_id"],
-                    "category_id": h.payload.get("category_id"),
-                    "dense_score": float(dense_score),
-                    "overlap_score": float(overlap),
-                    "final_score": float(final_score),
-                    "note": "auto_accepted_by_dense"
-                })
-                continue
+                accepted = True
+                note = "auto_accepted_by_dense"
+            elif 0.80 <= dense_score < 0.90 and overlap >= 0.2:
+                accepted = True
+                note = "accepted_by_overlap"
+            else:
+                accepted = False
 
-            # Normal acceptance
-            if dense_score >= min_similarity and final_score >= min_final_score:
+            if accepted:
                 results.append({
                     "question": h.payload["question"],
                     "answer_id": h.payload["answer_id"],
                     "category_id": h.payload.get("category_id"),
                     "dense_score": float(dense_score),
                     "overlap_score": float(overlap),
-                    "final_score": float(final_score)
+                    "note": note
                 })
             else:
                 rejected.append({
                     "question": h.payload["question"],
                     "dense_score": float(dense_score),
-                    "overlap_score": float(overlap),
-                    "final_score": float(final_score)
+                    "overlap_score": float(overlap)
                 })
 
         if not results:
