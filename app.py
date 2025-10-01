@@ -52,14 +52,12 @@ def search():
 
         question = data["question"].strip()
         wa_number = data.get("wa_number", "unknown")
-        category_id = data.get("category_id")  # optional
+        category_id = data.get("category_id")
 
         # Threshold minimal
-        min_similarity = 0.85
-        min_overlap = 0.2
-        min_final_score = 0.80
+        min_similarity = 0.80
+        min_final_score = 0.75
 
-        # Validasi panjang pertanyaan
         if len(question.split()) < 2:
             return jsonify({
                 "status": "low_confidence",
@@ -87,7 +85,7 @@ def search():
             query_filter=query_filter
         )
 
-        # --- Keyword search (BM25 sederhana via scroll + text index) ---
+        # --- Keyword search (MatchText) ---
         keyword_hits, _ = qdrant.scroll(
             collection_name="knowledge_bank",
             scroll_filter=models.Filter(
@@ -117,25 +115,15 @@ def search():
         if not sorted_hits:
             return jsonify({"status": "not_found", "message": "Tidak ada data ditemukan"}), 404
 
-        # --- Seleksi hasil dengan threshold + entity-aware penalti ---
-        results = []
-        rejected = []
+        results, rejected = [], []
         for item in sorted_hits:
             h = item["hit"]
             dense_score = getattr(h, "score", 0.0)
             overlap = keyword_overlap(question, h.payload["question"])
-            final_score = 0.7 * dense_score + 0.3 * overlap
+            final_score = dense_score + (0.1 * overlap)
 
-            # entity-aware penalti
-            if overlap == 0 and dense_score < 0.90:
-                final_score *= 0.5  # penalti besar
-
-            accepted = (
-                dense_score >= min_similarity
-                and final_score >= min_final_score
-            )
-
-            if accepted:
+            # Rule auto accept
+            if dense_score >= 0.90:
                 results.append({
                     "question": h.payload["question"],
                     "answer_id": h.payload["answer_id"],
@@ -143,7 +131,19 @@ def search():
                     "dense_score": float(dense_score),
                     "overlap_score": float(overlap),
                     "final_score": float(final_score),
-                    "low_overlap": overlap < min_overlap
+                    "note": "auto_accepted_by_dense"
+                })
+                continue
+
+            # Normal acceptance
+            if dense_score >= min_similarity and final_score >= min_final_score:
+                results.append({
+                    "question": h.payload["question"],
+                    "answer_id": h.payload["answer_id"],
+                    "category_id": h.payload.get("category_id"),
+                    "dense_score": float(dense_score),
+                    "overlap_score": float(overlap),
+                    "final_score": float(final_score)
                 })
             else:
                 rejected.append({
@@ -154,9 +154,6 @@ def search():
                 })
 
         if not results:
-            for r in rejected:
-                logger.info(f"[REJECTED] Q='{r['question']}' | dense={r['dense_score']:.3f}, "
-                            f"overlap={r['overlap_score']:.3f}, final={r['final_score']:.3f}")
             return jsonify({
                 "status": "low_confidence",
                 "message": "Tidak ada hasil cukup relevan",
@@ -180,7 +177,7 @@ def search():
         logger.error(f"Error in search: {str(e)}", exc_info=True)
         return error_response("ServerError", "Terjadi kesalahan internal pada server", detail=str(e))
 
-# ===== API: WA Management (sync) =====
+# ===== API WA Management (sync) =====
 @app.route("/api/sync", methods=["POST"])
 def sync_data():
     try:
@@ -204,7 +201,7 @@ def sync_data():
                     "vector": vector,
                     "payload": {
                         "mysql_id": point_id,
-                        "question": item["question"],   # penting untuk text index
+                        "question": item["question"],
                         "answer_id": item["answer_id"],
                         "category_id": item.get("category_id")
                     }
@@ -212,7 +209,6 @@ def sync_data():
 
             qdrant.upsert(collection_name="knowledge_bank", points=points)
 
-            # Pastikan ada text index utk field 'question'
             qdrant.create_payload_index(
                 collection_name="knowledge_bank",
                 field_name="question",
@@ -225,7 +221,6 @@ def sync_data():
                 )
             )
 
-            logger.info(f"[SYNC] {len(points)} data disinkronisasi + text index OK")
             return jsonify({
                 "status": "success",
                 "message": f"Sinkronisasi {len(points)} data berhasil",
