@@ -17,6 +17,12 @@ qdrant = QdrantClient(host=CONFIG["qdrant"]["host"], port=CONFIG["qdrant"]["port
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Stopwords sederhana (bisa diperluas sesuai kebutuhan)
+STOPWORDS = {
+    "apa", "bagaimana", "cara", "untuk", "dan", "atau", "yang", "dengan",
+    "di", "ke", "dari", "buat", "membuat", "mendaftar", "dimana", "kapan",
+    "berapa", "siapa", "adalah", "itu", "ini", "saya", "kamu"
+}
 
 # --- Helper untuk error response ---
 def error_response(error_type, message, detail=None, code=500):
@@ -31,14 +37,16 @@ def error_response(error_type, message, detail=None, code=500):
         payload["error"]["detail"] = detail
     return jsonify(payload), code
 
+# --- Helper overlap dengan stopword removal ---
+def tokenize_and_filter(text: str):
+    return [w.lower() for w in text.split() if w.lower() not in STOPWORDS and len(w) > 2]
 
-# --- Helper untuk cek overlap kata ---
 def keyword_overlap(query: str, candidate: str) -> float:
-    q_tokens = set([w.lower() for w in query.split() if len(w) > 3])
-    c_tokens = set([w.lower() for w in candidate.split() if len(w) > 3])
+    q_tokens = set(tokenize_and_filter(query))
+    c_tokens = set(tokenize_and_filter(candidate))
     if not q_tokens:
-        return 0
-    return len(q_tokens & c_tokens) / len(q_tokens)
+        return 0.0
+    return len(q_tokens & c_tokens) / len(q_tokens | c_tokens)
 
 
 # --- API WA Bot ---
@@ -86,7 +94,7 @@ def search():
             query_filter=query_filter
         )
 
-        # --- Keyword search (BM25 sederhana pakai payload index) ---
+        # --- Keyword search (BM25 sederhana via scroll + text index) ---
         keyword_hits, _ = qdrant.scroll(
             collection_name="knowledge_bank",
             scroll_filter=models.Filter(
