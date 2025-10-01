@@ -15,6 +15,14 @@ def ask_question(question, wa_number="628123456789"):
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+def fmt_score(val):
+    if val is None:
+        return "(N/A)"
+    try:
+        return f"{float(val):.3f}"
+    except:
+        return str(val)
+
 def pretty_print_response(resp):
     print("=" * 60)
     status = resp.get("status")
@@ -31,9 +39,10 @@ def pretty_print_response(resp):
             print(f"[{i}] Q: {item['question']}")
             print(f"    Answer ID : {item['answer_id']}")
             print(f"    Category  : {item.get('category_id')}")
-            print(f"    Dense     : {item.get('dense_score')}")
-            print(f"    Overlap   : {item.get('overlap_score')}")
-            print(f"    Final     : {item.get('final_score')}")
+            print(f"    Dense     : {fmt_score(item.get('dense_score'))}")
+            print(f"    Overlap   : {fmt_score(item.get('overlap_score'))}")
+            print(f"    Final     : {fmt_score(item.get('final_score'))}")
+            print(f"    Note      : {item.get('note', '-')}")
             print()
 
     elif status == "low_confidence":
@@ -46,9 +55,9 @@ def pretty_print_response(resp):
             print("🔎 Kandidat terdekat:")
             for cand in debug_candidates:
                 print(f"- Q: {cand['question']}")
-                print(f"    Dense   : {cand['dense_score']:.3f}")
-                print(f"    Overlap : {cand['overlap_score']:.3f}")
-                print(f"    Final   : {cand['final_score']:.3f}")
+                print(f"    Dense   : {fmt_score(cand.get('dense_score'))}")
+                print(f"    Overlap : {fmt_score(cand.get('overlap_score'))}")
+                print(f"    Final   : {fmt_score(cand.get('final_score'))}")
                 print()
 
     else:
