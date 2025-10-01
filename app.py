@@ -20,18 +20,15 @@ logger = logging.getLogger(__name__)
 # Stopwords sederhana (bisa diperluas sesuai kebutuhan)
 STOPWORDS = {
     "apa", "bagaimana", "cara", "untuk", "dan", "atau", "yang", "dengan",
-    "di", "ke", "dari", "buat", "membuat", "mendaftar", "dimana", "kapan",
-    "berapa", "siapa", "adalah", "itu", "ini", "saya", "kamu"
+    "di", "ke", "dari", "buat", "mengurus", "membuat", "mendaftar", "dimana", "kapan",
+    "berapa", "adalah", "itu", "ini", "saya", "kamu"
 }
 
 # --- Helper untuk error response ---
 def error_response(error_type, message, detail=None, code=500):
     payload = {
         "status": "error",
-        "error": {
-            "type": error_type,
-            "message": message
-        }
+        "error": {"type": error_type, "message": message}
     }
     if detail:
         payload["error"]["detail"] = detail
@@ -44,10 +41,10 @@ def tokenize_and_filter(text: str):
 def keyword_overlap(query: str, candidate: str) -> float:
     q_tokens = set(tokenize_and_filter(query))
     c_tokens = set(tokenize_and_filter(candidate))
-    if not q_tokens:
+    if not q_tokens or not c_tokens:
         return 0.0
+    # pakai Jaccard agar stabil
     return len(q_tokens & c_tokens) / len(q_tokens | c_tokens)
-
 
 # --- API WA Bot ---
 @app.route("/api/search", methods=["POST"])
@@ -98,12 +95,10 @@ def search():
         keyword_hits, _ = qdrant.scroll(
             collection_name="knowledge_bank",
             scroll_filter=models.Filter(
-                must=[
-                    models.FieldCondition(
-                        key="question",
-                        match=models.MatchText(text=question)
-                    )
-                ]
+                must=[models.FieldCondition(
+                    key="question",
+                    match=models.MatchText(text=question)
+                )]
             ),
             limit=5
         )
@@ -128,6 +123,7 @@ def search():
 
         # --- Seleksi hasil dengan threshold + overlap ---
         results = []
+        rejected = []  # simpan yang ditolak untuk logging
         for item in sorted_hits:
             h = item["hit"]
             dense_score = getattr(h, "score", 0.0)
@@ -143,8 +139,19 @@ def search():
                     "overlap_score": float(overlap),
                     "final_score": float(final_score)
                 })
+            else:
+                rejected.append({
+                    "question": h.payload["question"],
+                    "dense_score": float(dense_score),
+                    "overlap_score": float(overlap),
+                    "final_score": float(final_score)
+                })
 
         if not results:
+            # Log jawaban yang ditolak
+            for r in rejected:
+                logger.info(f"[REJECTED] Q='{r['question']}' | dense={r['dense_score']:.3f}, "
+                            f"overlap={r['overlap_score']:.3f}, final={r['final_score']:.3f}")
             return jsonify({"status": "low_confidence", "message": "Tidak ada hasil cukup relevan"}), 200
 
         return jsonify({
@@ -163,7 +170,6 @@ def search():
     except Exception as e:
         logger.error(f"Error in search: {str(e)}", exc_info=True)
         return error_response("ServerError", "Terjadi kesalahan internal pada server", detail=str(e))
-
 
 # --- API WA Management ---
 @app.route("/api/sync", methods=["POST"])
@@ -198,7 +204,7 @@ def sync_data():
 
             qdrant.upsert(collection_name="knowledge_bank", points=points)
 
-            # Index text
+            # Index text (untuk MatchText)
             qdrant.create_payload_index(
                 collection_name="knowledge_bank",
                 field_name="question",
@@ -211,9 +217,10 @@ def sync_data():
                 )
             )
 
+            logger.info(f"[SYNC] Selesai: {len(points)} data disinkronisasi")
             return jsonify({
                 "status": "success",
-                "message": f"Sinkronisasi {len(points)} data (hybrid enabled)",
+                "message": f"Sinkronisasi {len(points)} data berhasil",
                 "total_synced": len(points)
             })
 
@@ -271,7 +278,6 @@ def sync_data():
     except Exception as e:
         logger.error(f"Error in sync_data: {str(e)}", exc_info=True)
         return error_response("ServerError", "Kesalahan internal saat sinkronisasi", detail=str(e))
-
 
 if __name__ == "__main__":
     app.run(host=CONFIG["api"]["host"], port=CONFIG["api"]["port"], debug=True)
