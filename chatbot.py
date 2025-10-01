@@ -17,8 +17,10 @@ def ask_question(question, wa_number="628123456789"):
 
 def pretty_print_response(resp):
     print("=" * 60)
-    if resp.get("status") == "success":
-        print(f"✅ Status: {resp['status']}")
+    status = resp.get("status")
+
+    if status == "success":
+        print(f"✅ Status: {status}")
         meta = resp["data"]["metadata"]
         print(f"📌 Pertanyaan Asli: {meta['original_question']}")
         print(f"📱 WA Number: {meta['wa_number']}")
@@ -33,19 +35,26 @@ def pretty_print_response(resp):
             print(f"    Overlap   : {item.get('overlap_score')}")
             print(f"    Final     : {item.get('final_score')}")
             print()
-    elif resp.get("status") == "low_confidence":
+
+    elif status == "low_confidence":
         print("⚠️ Low confidence")
         print(f"Message: {resp.get('message')}")
-        if "debug_top_candidates" in resp:
-            print("-" * 60)
+        print("-" * 60)
+        # tampilkan kandidat debug (dense, overlap, final)
+        debug_candidates = resp.get("debug_rejected") or resp.get("debug_top_candidates")
+        if debug_candidates:
             print("🔎 Kandidat terdekat:")
-            for cand in resp["debug_top_candidates"]:
-                print(f"- {cand['question']} | dense={cand['dense_score']:.3f}, "
-                      f"overlap={cand['overlap_score']:.3f}, "
-                      f"final={cand['final_score']:.3f}")
+            for cand in debug_candidates:
+                print(f"- Q: {cand['question']}")
+                print(f"    Dense   : {cand['dense_score']:.3f}")
+                print(f"    Overlap : {cand['overlap_score']:.3f}")
+                print(f"    Final   : {cand['final_score']:.3f}")
+                print()
+
     else:
         print("❌ Error:")
         print(json.dumps(resp, indent=2, ensure_ascii=False))
+
     print("=" * 60)
 
 
