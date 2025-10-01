@@ -7,49 +7,42 @@ import logging
 
 app = Flask(__name__)
 
-# ===== Model & Client =====
-# Pakai model lokal agar tidak download ulang
+# Load model E5 (pakai path lokal)
 model = SentenceTransformer("/home/kominfo/models/e5-small-local")
 
-qdrant = QdrantClient(
-    host=CONFIG["qdrant"]["host"],
-    port=CONFIG["qdrant"]["port"]
-)
+# Setup Qdrant client
+qdrant = QdrantClient(host=CONFIG["qdrant"]["host"], port=CONFIG["qdrant"]["port"])
 
-# ===== Logging =====
+# Logging setup
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ===== Stopwords (untuk overlap booster ringan) =====
+# Stopwords sederhana (bisa diperluas sesuai kebutuhan)
 STOPWORDS = {
     "apa", "bagaimana", "cara", "untuk", "dan", "atau", "yang", "dengan",
-    "di", "ke", "dari", "buat", "mengurus", "membuat", "mendaftar", "dimana", "kapan",
-    "berapa", "adalah", "itu", "ini", "saya", "kamu"
+    "di", "ke", "dari", "buat", "mengurus", "membuat", "mendaftar",
+    "dimana", "kapan", "berapa", "adalah", "itu", "ini", "saya", "kamu"
 }
 
-# ===== Helpers =====
+# --- Helper untuk error response ---
 def error_response(error_type, message, detail=None, code=500):
     payload = {"status": "error", "error": {"type": error_type, "message": message}}
     if detail:
         payload["error"]["detail"] = detail
     return jsonify(payload), code
 
+# --- Helper overlap dengan stopword removal ---
 def tokenize_and_filter(text: str):
-    # lowercase, split sederhana; buang stopwords & token sangat pendek
     return [w.lower() for w in text.split() if w.lower() not in STOPWORDS and len(w) > 2]
 
 def keyword_overlap(query: str, candidate: str) -> float:
-    """
-    Overlap Jaccard (0..1) setelah stopword removal.
-    Dipakai hanya sebagai booster kecil, bukan filter keras.
-    """
     q_tokens = set(tokenize_and_filter(query))
     c_tokens = set(tokenize_and_filter(candidate))
     if not q_tokens or not c_tokens:
         return 0.0
     return len(q_tokens & c_tokens) / len(q_tokens | c_tokens)
 
-# ===== API: WA Bot =====
+# --- API WA Bot ---
 @app.route("/api/search", methods=["POST"])
 def search():
     try:
@@ -61,10 +54,10 @@ def search():
         wa_number = data.get("wa_number", "unknown")
         category_id = data.get("category_id")  # optional
 
-        # --- Threshold & bobot (disetel supaya dense jadi faktor utama) ---
-        DENSE_ACCEPT = 0.88          # jika dense >= ini → langsung lolos meski overlap rendah
-        FINAL_ACCEPT = 0.85          # kalau final >= ini → lolos
-        OVERLAP_ALPHA = 0.15         # booster overlap kecil (dense + alpha*overlap)
+        # Threshold minimal
+        min_similarity = 0.85
+        min_overlap = 0.2
+        min_final_score = 0.80
 
         # Validasi panjang pertanyaan
         if len(question.split()) < 2:
@@ -85,7 +78,7 @@ def search():
                 )]
             )
 
-        # --- Dense semantic search (E5) ---
+        # --- Dense semantic search ---
         query_vector = model.encode("query: " + question).tolist()
         dense_hits = qdrant.search(
             collection_name="knowledge_bank",
@@ -94,8 +87,7 @@ def search():
             query_filter=query_filter
         )
 
-        # --- Keyword search (text index via MatchText) ---
-        # Catatan: ini bukan BM25 murni, tapi text index Qdrant cukup membantu kata kunci literal
+        # --- Keyword search (BM25 sederhana via scroll + text index) ---
         keyword_hits, _ = qdrant.scroll(
             collection_name="knowledge_bank",
             scroll_filter=models.Filter(
@@ -107,69 +99,68 @@ def search():
             limit=5
         )
 
-        # --- Gabungkan kandidat via RRF sederhana ---
+        # --- Gabungkan hasil (Reciprocal Rank Fusion) ---
         combined = {}
         for i, h in enumerate(dense_hits):
-            rrf_score = 1 / (i + 1)
-            combined[str(h.id)] = {"hit": h, "rrf": combined.get(str(h.id), {}).get("rrf", 0) + rrf_score}
+            score = 1 / (i + 1)
+            combined[str(h.id)] = {"hit": h, "score": combined.get(str(h.id), {}).get("score", 0) + score}
 
         for i, h in enumerate(keyword_hits):
-            rrf_score = 1 / (i + 1)
+            score = 1 / (i + 1)
             if str(h.id) in combined:
-                combined[str(h.id)]["rrf"] += rrf_score
+                combined[str(h.id)]["score"] += score
             else:
-                combined[str(h.id)] = {"hit": h, "rrf": rrf_score}
+                combined[str(h.id)] = {"hit": h, "score": score}
 
-        # Ambil top-N gabungan untuk dinilai dengan skor akhir
-        top_items = sorted(combined.values(), key=lambda x: x["rrf"], reverse=True)[:3]
+        sorted_hits = sorted(combined.values(), key=lambda x: x["score"], reverse=True)[:3]
 
-        if not top_items:
+        if not sorted_hits:
             return jsonify({"status": "not_found", "message": "Tidak ada data ditemukan"}), 404
 
+        # --- Seleksi hasil dengan threshold + entity-aware penalti ---
         results = []
-        debug_candidates = []
-
-        for item in top_items:
+        rejected = []
+        for item in sorted_hits:
             h = item["hit"]
-            dense_score = float(getattr(h, "score", 0.0))  # pada hasil keyword, .score mungkin tidak ada
-            overlap = float(keyword_overlap(question, h.payload["question"]))
-            final_score = dense_score + OVERLAP_ALPHA * overlap
+            dense_score = getattr(h, "score", 0.0)
+            overlap = keyword_overlap(question, h.payload["question"])
+            final_score = 0.7 * dense_score + 0.3 * overlap
 
-            debug_candidates.append({
-                "id": str(h.id),
-                "question": h.payload.get("question"),
-                "dense_score": round(dense_score, 4),
-                "overlap_score": round(overlap, 4),
-                "final_score": round(final_score, 4)
-            })
+            # entity-aware penalti
+            if overlap == 0 and dense_score < 0.90:
+                final_score *= 0.5  # penalti besar
 
-            # Aturan lolos:
-            # 1) Dense sangat tinggi → lolos langsung (robust ke sinonim)
-            # 2) Jika tidak, pakai final_score (dense + booster overlap)
-            if dense_score >= DENSE_ACCEPT or final_score >= FINAL_ACCEPT:
+            accepted = (
+                dense_score >= min_similarity
+                and final_score >= min_final_score
+            )
+
+            if accepted:
                 results.append({
                     "question": h.payload["question"],
                     "answer_id": h.payload["answer_id"],
                     "category_id": h.payload.get("category_id"),
-                    "dense_score": dense_score,
-                    "overlap_score": overlap,
-                    "final_score": final_score
+                    "dense_score": float(dense_score),
+                    "overlap_score": float(overlap),
+                    "final_score": float(final_score),
+                    "low_overlap": overlap < min_overlap
+                })
+            else:
+                rejected.append({
+                    "question": h.payload["question"],
+                    "dense_score": float(dense_score),
+                    "overlap_score": float(overlap),
+                    "final_score": float(final_score)
                 })
 
         if not results:
-            # Kirim debug score supaya mudah tuning di sisi klien/log
-            logger.info(f"[LOW_CONF] DEBUG CANDIDATES: {debug_candidates}")
+            for r in rejected:
+                logger.info(f"[REJECTED] Q='{r['question']}' | dense={r['dense_score']:.3f}, "
+                            f"overlap={r['overlap_score']:.3f}, final={r['final_score']:.3f}")
             return jsonify({
                 "status": "low_confidence",
                 "message": "Tidak ada hasil cukup relevan",
-                "debug": {
-                    "thresholds": {
-                        "dense_accept": DENSE_ACCEPT,
-                        "final_accept": FINAL_ACCEPT,
-                        "overlap_alpha": OVERLAP_ALPHA
-                    },
-                    "candidates": debug_candidates
-                }
+                "debug_rejected": rejected
             }), 200
 
         return jsonify({
