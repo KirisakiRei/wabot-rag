@@ -4,6 +4,7 @@ from qdrant_client import QdrantClient
 from qdrant_client.http import models
 from config import CONFIG
 import logging
+import re  # ⬅️ Tambahan untuk regex
 
 app = Flask(__name__)
 
@@ -17,19 +18,25 @@ qdrant = QdrantClient(host=CONFIG["qdrant"]["host"], port=CONFIG["qdrant"]["port
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Stopwords sederhana (bisa diperluas sesuai kebutuhan)
+# Stopwords sederhana
 STOPWORDS = {
     "apa", "bagaimana", "cara", "untuk", "dan", "atau", "yang", "dengan",
     "di", "ke", "dari", "buat", "mengurus", "membuat", "mendaftar",
-    "dimana", "kapan", "berapa", "adalah", "itu", "ini", "saya", "kamu"
+    "dimana", "kapan", "berapa", "adalah", "itu", "ini", "saya", "kamu",
+    "siapa", "kepala"
 }
 
-# --- Helper untuk error response ---
-def error_response(error_type, message, detail=None, code=500):
-    payload = {"status": "error", "error": {"type": error_type, "message": message}}
-    if detail:
-        payload["error"]["detail"] = detail
-    return jsonify(payload), code
+# --- Normalisasi pertanyaan: hapus tanda baca ---
+def normalize_text(text: str) -> str:
+    """
+    Menghapus semua tanda baca dan karakter non-alfanumerik (kecuali spasi),
+    lalu merapikan spasi ganda.
+    """
+    # Hapus tanda baca dan simbol
+    text = re.sub(r"[^\w\s]", " ", text)
+    # Ganti spasi ganda dengan satu spasi
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
 
 # --- Helper overlap dengan stopword removal ---
 def tokenize_and_filter(text: str):
@@ -42,6 +49,13 @@ def keyword_overlap(query: str, candidate: str) -> float:
         return 0.0
     return len(q_tokens & c_tokens) / len(q_tokens | c_tokens)
 
+# --- Helper untuk error response ---
+def error_response(error_type, message, detail=None, code=500):
+    payload = {"status": "error", "error": {"type": error_type, "message": message}}
+    if detail:
+        payload["error"]["detail"] = detail
+    return jsonify(payload), code
+
 # --- API WA Bot ---
 @app.route("/api/search", methods=["POST"])
 def search():
@@ -50,7 +64,8 @@ def search():
         if not data or "question" not in data:
             return error_response("ValidationError", "Field 'question' wajib diisi", code=400)
 
-        question = data["question"].strip()
+        raw_question = data["question"].strip()
+        question = normalize_text(raw_question)  # ✅ Normalisasi di sini
         wa_number = data.get("wa_number", "unknown")
         category_id = data.get("category_id")
 
@@ -60,7 +75,7 @@ def search():
                 "message": "Pertanyaan terlalu singkat, mohon lebih spesifik"
             }), 200
 
-        logger.info(f"[SEARCH] User={wa_number}, Question='{question}', CategoryID={category_id}")
+        logger.info(f"[SEARCH] User={wa_number}, Question='{question}', Raw='{raw_question}', CategoryID={category_id}")
 
         # Filter kategori (opsional)
         query_filter = None
@@ -123,11 +138,9 @@ def search():
             if dense_score >= 0.90:
                 accepted = True
                 note = "auto_accepted_by_dense"
-            elif 0.80 <= dense_score < 0.90 and overlap >= 0.2:
+            elif 0.80 <= dense_score < 0.90 and overlap > 0.2:
                 accepted = True
                 note = "accepted_by_overlap"
-            else:
-                accepted = False
 
             if accepted:
                 results.append({
@@ -159,7 +172,8 @@ def search():
                 "metadata": {
                     "total_found": len(results),
                     "wa_number": wa_number,
-                    "original_question": question,
+                    "original_question": raw_question,  # simpan versi aslinya
+                    "normalized_question": question,    # tampilkan versi normalisasi juga
                     "category_used": category_id
                 }
             }
