@@ -30,10 +30,11 @@ def pretty_print_response(resp):
     if status == "success":
         print(f"✅ Status: {status}")
         meta = resp["data"]["metadata"]
-        print(f"📌 Pertanyaan Asli: {meta['original_question']}")
-        print(f"📱 WA Number: {meta['wa_number']}")
-        print(f"📂 Category: {meta['category_used']}")
-        print(f"🔍 Total Found: {meta['total_found']}")
+        print(f"📌 Pertanyaan Asli    : {meta['original_question']}")
+        print(f"🧹 Pertanyaan Normal  : {meta.get('normalized_question', '(tidak tersedia)')}")
+        print(f"📱 WA Number          : {meta['wa_number']}")
+        print(f"📂 Category           : {meta['category_used']}")
+        print(f"🔍 Total Found        : {meta['total_found']}")
         print("-" * 60)
         for i, item in enumerate(resp["data"]["similar_questions"], 1):
             print(f"[{i}] Q: {item['question']}")
@@ -48,6 +49,11 @@ def pretty_print_response(resp):
     elif status == "low_confidence":
         print("⚠️ Low confidence")
         print(f"Message: {resp.get('message')}")
+        # kalau ada normalized question di metadata, tampilkan juga
+        meta = resp.get("metadata", {})
+        if meta:
+            print(f"📌 Pertanyaan Asli    : {meta.get('original_question', '-')}")
+            print(f"🧹 Pertanyaan Normal  : {meta.get('normalized_question', '-')}")
         print("-" * 60)
         # tampilkan kandidat debug (dense, overlap, final)
         debug_candidates = resp.get("debug_rejected") or resp.get("debug_top_candidates")
