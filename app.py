@@ -67,25 +67,118 @@ def error_response(error_type="ServerError", message="Terjadi kesalahan", code=5
 # ==========================================================
 CATEGORY_MAP = {
     "0196f6a8-9cb8-7385-8383-9d4f8fdcd396": {  # Kependudukan
-        "keywords": ["ktp", "nik", "kk", "kartu keluarga", "e-ktp", "domisili", "pindah", "kelahiran", "kematian"],
+        "keywords": [
+                     "ktp",
+                     "nik",
+                     "kk",
+                     "kartu keluarga",
+                     "e-ktp",
+                     "domisili",
+                     "kelahiran",
+                     "kematian"
+                    ],
         "name": "Kependudukan"
     },
     "0196f6b9-ba96-70f1-a930-3b89e763170f": {  # Struktur Organisasi
-        "keywords": ["kepala dinas", "kadis", "sekretaris", "jabatan", "struktur", "pimpinan", "pegawai"],
+        "keywords": [
+                     "kepala dinas",
+                     "kadis",
+                     "sekretaris",
+                     "jabatan",
+                     "struktur",
+                     "pimpinan",
+                     "pegawai",
+                     "organisasi",
+                     "staff",
+                     "karyawan"
+                    ],
         "name": "Struktur Organisasi"
     },
     "0196ccd1-d7f9-7252-b0a1-a67d4bc103a0": {  # Kesehatan
-        "keywords": ["puskesmas", "rsud", "klinik", "vaksin", "bpjs", "obat", "kesehatan"],
+        "keywords": [
+                     "puskesmas",
+                     "rsud",
+                     "klinik",
+                     "vaksin",
+                     "bpjs",
+                     "obat",
+                     "berobat",
+                     "posyandu",
+                     "stunting",
+                     "imunisasi",
+                     "hamil"
+                    ],
         "name": "Kesehatan"
     },
     "0196cd16-3a0a-726d-99b4-2e9c6dda5f64": {  # Pendidikan
-        "keywords": ["sekolah", "guru", "siswa", "pendidikan", "universitas", "kuliah"],
+        "keywords": [
+                     "sekolah",
+                     "guru",
+                     "siswa",
+                     "universitas",
+                     "kuliah",
+                     "beasiswa",
+                     "mahasiswa",
+                     "akademik",
+                     "kurikulum",
+                     "ppdb",
+                     "sd",
+                     "smp",
+                     "smbp",
+                     "sekolah negeri",
+                     "prestasi",
+                     "zonasi",
+                     "afirmasi",
+                     "kip"
+                    ],
         "name": "Pendidikan"
     },
     "019707b1-ebb6-708f-ad4d-bfc65d05f299": {  # Layanan Masyarakat
-        "keywords": ["pengaduan", "izin", "pelayanan", "surat", "permohonan", "bantuan", "masyarakat"],
+        "keywords": [
+                     "pengaduan",
+                     "izin",
+                     "pelayanan",
+                     "surat",
+                     "permohonan",
+                     "bantuan",
+                     "masyarakat"
+                    ],
         "name": "Layanan Masyarakat"
     },
+    "0196f6c0-1178-733a-acd8-b8cb62eefe98": {  # Lokasi Fasilitas 
+        "keywords": [
+                     "lokasi",
+                     "alamat",
+                     "posisi",
+                     "kantor"
+                    ],
+        "name": "Lokasi Fasilitas Pemerintahan Kota Medan"
+    },
+    "01970829-1054-72b2-bb31-16a34edd84fc": {  # Peraturan
+        "keywords": [
+                     "aturan",
+                     "perda",
+                     "pergub",
+                     "perwali",
+                     "permen",
+                     "perpres",
+                     "peraturan",
+                     "hukum"
+                    ],
+        "name": "Peraturan"
+    },
+    "001970853-dd2e-716e-b90c-c4f79270f700": {  # Profil
+        "keywords": [
+                     "visi",
+                     "misi", 
+                     "tupoksi", 
+                     "profil", 
+                     "tugas", 
+                     "fungsi"
+                    ],
+        "name": "Profil"
+    }
+    
 }
 
 def detect_category(question: str):
