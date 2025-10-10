@@ -39,7 +39,7 @@ CATEGORY_KEYWORDS = {
         "sekolah", "guru", "siswa", "ppdb", "beasiswa", "pendidikan", "kuliah", "universitas", "murid", "kip"
     ],
     "019707b1-ebb6-708f-ad4d-bfc65d05f299": [  # Layanan Masyarakat
-        "pengaduan", "izin", "permohonan", "pelayanan", "bantuan", "masyarakat", "surat"
+        "pengaduan", "izin", "permohonan", "pelayanan", "bantuan", "masyarakat", "surat",
     ],
     "0196f6b9-ba96-70f1-a930-3b89e763170f": [  # Struktur Organisasi
         "kepala dinas", "kadis", "sekretaris", "jabatan", "struktur", "pimpinan"
@@ -49,7 +49,11 @@ CATEGORY_KEYWORDS = {
     ],
     "0196f6c0-1178-733a-acd8-b8cb62eefe98": [  # Lokasi Fasilitas Pemerintahan
         "lokasi", "alamat", "kantor", "posisi"
+    ],
+     "001970853-dd2e-716e-b90c-c4f79270f700": [  # Profil
+        "tugas", "tupoksi", "peran", "fungsi", "profil", "visi", "misi"
     ]
+    
 }
 
 CATEGORY_NAMES = {
@@ -59,7 +63,8 @@ CATEGORY_NAMES = {
     "019707b1-ebb6-708f-ad4d-bfc65d05f299": "Layanan Masyarakat",
     "0196f6b9-ba96-70f1-a930-3b89e763170f": "Struktur Organisasi",
     "01970829-1054-72b2-bb31-16a34edd84fc": "Peraturan",
-    "0196f6c0-1178-733a-acd8-b8cb62eefe98": "Lokasi Fasilitas Pemerintahan Kota Medan"
+    "0196f6c0-1178-733a-acd8-b8cb62eefe98": "Lokasi Fasilitas Pemerintahan Kota Medan",
+    "001970853-dd2e-716e-b90c-c4f79270f700": "Profil"
 }
 
 def detect_category(question: str):
@@ -101,38 +106,22 @@ def preprocess_question_with_ai(question: str):
 
         system_prompt = """
         Anda adalah filter AI untuk pertanyaan seputar layanan publik dan fasilitas Pemerintah Kota Medan.
-
-        Tugas:
-        1. Nilai apakah pertanyaan relevan dengan topik pemerintahan atau layanan publik Kota Medan.
-        2. Terima pertanyaan yang menyebut dinas, lembaga, atau fasilitas di bawah Pemko Medan, termasuk singkatan umum:
-            Disnaker=Dinas Ketenagakerjaan,
-            Dinkes=Dinas Kesehatan,
-            Disdik=Dinas Pendidikan,
-            Dishub=Dinas Perhubungan,
-            Dukcapil=Dinas Kependudukan dan Pencatatan Sipil,
-            Kominfo=Dinas Komunikasi dan Informatika,
-            DLH=Dinas Lingkungan Hidup,
-            DPMPTSP=Dinas Penanaman Modal dan Pelayanan Terpadu Satu Pintu,
-            Dispar=Dinas Pariwisata,
-            Damkar=DinasPemadam Kebakaran dan Penyelamatan,
-            Dinas KUKMPP=Dinas Koperasi, Usaha Kecil, Menengah, Perdagangan dan Perindustrian,
-            DKP3=Dinas Ketahanan Pangan Pertanian Perikanan,
-            P3APMPPKB=Dinas Pemberdayaan Perempuan, Perlindungan Anak, Pemberdayaan Masyarakat dan Pengendalian Penduduk dan Keluarga Berencana,
-            Dispusar=Dinas Perpustakaan dan Kearsipan,
-            Disperkimcikataru=Dinas Perumahan, Kawasan Pemukiman, Cipta Karya dan Tata Ruang,
-            Dinsos=Dinas Sosial
-            SDABMBK=Dinas Sumber Daya Air, Bina Marga dan Bina Konstruksi,
-            Dispora=Dinas Pemuda dan Olahraga,       
-            Satpol PP=Satuan Polisi Pamong Praja,
-            BPBD=Badan Penanggulangan Bencana Daerah,
-            Bappeda=Badan Perencanaan Pembangunan Daerah.
-        3. Tolak jika terlalu pendek (<3 kata) atau menyebut daerah di luar Medan.
-
-        Balas HANYA dalam JSON valid:
-        {"valid": true/false,
+        Tugas Anda:
+        1. Nilai apakah pertanyaan relevan dengan topik pemerintahan, pelayanan publik, atau fasilitas di Kota Medan.
+        2. Terima pertanyaan yang berkaitan dengan:
+        - pengurusan dokumen (KTP, KK, akta, izin, NIB, UMKM, beasiswa, BPJS, dll.)
+        - pertanyaan tentang dinas, kepala dinas, atau struktur organisasi Pemko Medan.
+        3. Jika pertanyaan menyebut singkatan dinas (contoh: Disnaker, Dinkes, Dishub, Disdik, Disdukcapil, Kominfo, DLH, Satpol PP, BPBD, Bappeda), ubah ke bentuk lengkap HANYA bila konteksnya jelas terkait "dinas" atau "kepala dinas".
+        Jangan ubah atau menebak jika konteksnya tidak berkaitan dengan pemerintahan.
+        4. Tolak jika pertanyaan terlalu pendek (<3 kata) atau menyebut daerah di luar Kota Medan.
+        5. Jawab HANYA dalam format JSON valid:
+        {
+        "valid": true/false,
         "reason": "...",
         "suggestion": "...",
-        "clean_question": "..."}
+        "clean_question": "..."
+        }
+
     """
         payload = {
             "model": "meta/llama-4-maverick-instruct",
@@ -141,7 +130,7 @@ def preprocess_question_with_ai(question: str):
                 {"role": "user", "content": question.strip()}
             ],
             "temperature":  0.0,
-            "top_p": 0.8
+            "top_p": 0.6
         }
 
         resp = requests.post(url, headers=headers, json=payload, timeout=20)
