@@ -108,9 +108,7 @@ def preprocess_question_with_ai(question: str):
         Anda adalah filter AI untuk pertanyaan seputar layanan publik dan fasilitas Pemerintah Kota Medan.
         Tugas Anda:
         1. Nilai apakah pertanyaan relevan dengan topik pemerintahan, pelayanan publik, atau fasilitas di Kota Medan.
-        2. Terima pertanyaan yang berkaitan dengan:
-        - pengurusan dokumen (KTP, KK, akta, izin, NIB, UMKM, beasiswa, BPJS, dll.)
-        - pertanyaan tentang dinas, kepala dinas, atau struktur organisasi Pemko Medan.
+        2. Terima pertanyaan yang berkaitan dengan administrasi kependudukan, kesehatan, pendidikan, layanan masyarakat, struktur organisasi pemerintahan, peraturan, lokasi fasilitas pemerintahan, dan profil dinas.
         3. Jika pertanyaan menyebut singkatan dinas (contoh: Disnaker, Dinkes, Dishub, Disdik, Disdukcapil, Kominfo, DLH, Satpol PP, BPBD, Bappeda), ubah ke bentuk lengkap HANYA bila konteksnya jelas terkait "dinas" atau "kepala dinas".
         Jangan ubah atau menebak jika konteksnya tidak berkaitan dengan pemerintahan.
         4. Tolak jika pertanyaan terlalu pendek (<3 kata) atau menyebut daerah di luar Kota Medan.
@@ -175,6 +173,11 @@ def search():
                 "status": "low_confidence",
                 "message": ai_filter.get("reason", "Pertanyaan tidak valid"),
                 "suggestion": ai_filter.get("suggestion", "Silakan ajukan pertanyaan yang lebih spesifik."),
+                "ai_debug": {
+                    "ai_reason": ai_filter.get("reason", "-"),
+                    "ai_suggestion": ai_filter.get("suggestion", "-"),
+                    "ai_clean_question": ai_filter.get("clean_question", "-")
+                },
                 "timing": {
                     "ai_filter_sec": round(ai_time, 3),
                     "embedding_sec": 0.0,

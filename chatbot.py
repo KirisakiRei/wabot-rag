@@ -55,6 +55,14 @@ def pretty_print_response(resp, question):
         print(f"📚 Qdrant Search: {timing.get('qdrant_sec', 0):.3f}s")
         print(f"⚡ Total         : {timing.get('total_sec', 0):.3f}s")
         print("-" * 60)
+
+        ai_debug = resp.get("ai_debug", {})
+        if ai_debug:
+            print(f"🤖 AI Reason     : {ai_debug.get('ai_reason', '-')}")
+            print(f"💡 AI Suggestion : {ai_debug.get('ai_suggestion', '-')}")
+            print(f"🧹 AI Cleaned    : {ai_debug.get('ai_clean_question', '-')}")
+            print("-" * 60)
+            
         print(f"Message  : {resp.get('message')}")
         print(f"Suggestion : {resp.get('suggestion', '-')}")
         debug = resp.get("debug_rejected") or []
