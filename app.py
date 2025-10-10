@@ -7,6 +7,7 @@ import logging
 import requests
 import json
 import re
+import time
 
 app = Flask(__name__)
 
@@ -99,19 +100,14 @@ def preprocess_question_with_ai(question: str):
         }
 
         system_prompt = """
-Anda adalah model AI yang memfilter pertanyaan sebelum diteruskan ke sistem RAG FAQ Pemerintah Kota Medan.
-Tugas Anda adalah menilai apakah pertanyaan layak diproses oleh sistem FAQ Pemko Medan.
-Ikuti aturan berikut secara ketat:
-1. Pertanyaan harus relevan dengan layanan publik, fasilitas pemerintahan, atau informasi seputar Kota Medan.
-2. Tidak boleh terlalu pendek (contoh: 'KTP', 'izin', 'Medan').
-3. Tidak boleh menyebut daerah di luar Kota Medan (Jakarta, Bandung, dll).
-4. Jawaban harus berupa JSON:
-{
- "valid": true/false,
+Anda adalah filter AI untuk pertanyaan seputar layanan publik & fasilitas Pemerintah Kota Medan.
+Nilai apakah pertanyaan relevan.
+Tolak jika terlalu pendek (<3 kata) atau menyebut daerah luar Medan.
+Balas HANYA dalam JSON:
+{"valid": true/false, 
  "reason": "...",
  "suggestion": "...",
- "clean_question": "..."
-}
+ "clean_question": "..."}
 """
         payload = {
             "model": "meta/llama-4-maverick-instruct",
@@ -119,7 +115,7 @@ Ikuti aturan berikut secara ketat:
                 {"role": "system", "content": system_prompt.strip()},
                 {"role": "user", "content": question.strip()}
             ],
-            "temperature": 0.0,
+            "temperature":  0.0,
             "top_p": 1.0
         }
 
@@ -146,6 +142,8 @@ Ikuti aturan berikut secara ketat:
 @app.route("/api/search", methods=["POST"])
 def search():
     try:
+        t0 = time.time()  # ⏱️ total start
+        
         data = request.json
         if not data or "question" not in data:
             return error_response("ValidationError", "Field 'question' wajib diisi", code=400)
@@ -153,31 +151,38 @@ def search():
         raw_question = data["question"].strip()
         wa_number = data.get("wa_number", "unknown")
 
-        # Preprocessing via AI
+        # ========== ⏱️ AI Filter timing ==========
+        t_ai_start = time.time()
         ai_filter = preprocess_question_with_ai(raw_question)
+        ai_time = time.time() - t_ai_start
+
         if not ai_filter.get("valid", True):
             return jsonify({
                 "status": "low_confidence",
                 "message": ai_filter.get("reason", "Pertanyaan tidak valid"),
-                "suggestion": ai_filter.get("suggestion", "Silakan ajukan pertanyaan yang lebih spesifik.")
+                "suggestion": ai_filter.get("suggestion", "Silakan ajukan pertanyaan yang lebih spesifik."),
+                "timing": {
+                    "ai_filter_sec": round(ai_time, 3),
+                    "embedding_sec": 0.0,
+                    "qdrant_sec": 0.0,
+                    "total_sec": round(time.time() - t0, 3)
+                }
             }), 200
 
         question = normalize_text(ai_filter.get("clean_question", raw_question))
-        question = clean_location_terms(question)  # ✨ Hapus “di kota medan” / “di medan”
+        question = clean_location_terms(question)
 
-        # Auto detect category
+        # ========== ⏱️ Deteksi kategori ==========
         category_data = detect_category(question)
         category_id = category_data["id"] if category_data else None
 
-        if len(question.split()) < 2:
-            return jsonify({
-                "status": "low_confidence",
-                "message": "Pertanyaan terlalu singkat, mohon lebih spesifik"
-            }), 200
+        # ========== ⏱️ Embedding timing ==========
+        t_embed = time.time()
+        query_vector = model.encode("query: " + question).tolist()
+        embedding_time = time.time() - t_embed
 
-        logger.info(f"[SEARCH] User={wa_number}, Question='{question}', Category={category_data['name'] if category_data else 'Global'}")
-
-        # Filter by category
+        # ========== ⏱️ Qdrant search timing ==========
+        t_qdrant = time.time()
         query_filter = None
         if category_id:
             query_filter = models.Filter(
@@ -187,8 +192,6 @@ def search():
                 )]
             )
 
-        # Dense semantic search
-        query_vector = model.encode("query: " + question).tolist()
         dense_hits = qdrant.search(
             collection_name="knowledge_bank",
             query_vector=query_vector,
@@ -196,7 +199,6 @@ def search():
             query_filter=query_filter
         )
 
-        # Keyword search fallback
         keyword_hits, _ = qdrant.scroll(
             collection_name="knowledge_bank",
             scroll_filter=models.Filter(
@@ -207,8 +209,9 @@ def search():
             ),
             limit=5
         )
+        qdrant_time = time.time() - t_qdrant
 
-        # Gabung hasil
+        # === combine results (tanpa ubah logika lama) ===
         combined = {}
         for i, h in enumerate(dense_hits):
             score = 1 / (i + 1)
@@ -219,10 +222,8 @@ def search():
                 combined[str(h.id)]["score"] += score
             else:
                 combined[str(h.id)] = {"hit": h, "score": score}
-        sorted_hits = sorted(combined.values(), key=lambda x: x["score"], reverse=True)[:3]
 
-        if not sorted_hits:
-            return jsonify({"status": "not_found", "message": "Tidak ada data ditemukan"}), 404
+        sorted_hits = sorted(combined.values(), key=lambda x: x["score"], reverse=True)[:3]
 
         results, rejected = [], []
         for item in sorted_hits:
@@ -256,11 +257,20 @@ def search():
                     "overlap_score": float(overlap)
                 })
 
+        total_time = time.time() - t0  # total waktu request
+
+        # ========== RESPONSE ==========
         if not results:
             return jsonify({
                 "status": "low_confidence",
                 "message": "Tidak ada hasil cukup relevan",
-                "debug_rejected": rejected
+                "debug_rejected": rejected,
+                "timing": {
+                    "ai_filter_sec": round(ai_time, 3),
+                    "embedding_sec": round(embedding_time, 3),
+                    "qdrant_sec": round(qdrant_time, 3),
+                    "total_sec": round(total_time, 3)
+                }
             }), 200
 
         return jsonify({
@@ -275,13 +285,18 @@ def search():
                     "ai_clean_question": ai_filter.get("clean_question", "(tidak ada perubahan)"),
                     "detected_category": category_data["name"] if category_data else "Global"
                 }
+            },
+            "timing": {
+                "ai_filter_sec": round(ai_time, 3),
+                "embedding_sec": round(embedding_time, 3),
+                "qdrant_sec": round(qdrant_time, 3),
+                "total_sec": round(total_time, 3)
             }
         })
 
     except Exception as e:
         logger.error(f"Error in search: {str(e)}", exc_info=True)
-        return error_response("ServerError", "Terjadi kesalahan internal pada server", detail=str(e))
-
+        return error_response("ServerError", "Kesalahan internal", detail=str(e))
 
 def error_response(error_type, message, detail=None, code=500):
     payload = {"status": "error", "error": {"type": error_type, "message": message}}
