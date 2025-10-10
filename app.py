@@ -100,15 +100,32 @@ def preprocess_question_with_ai(question: str):
         }
 
         system_prompt = """
-Anda adalah filter AI untuk pertanyaan seputar layanan publik & fasilitas Pemerintah Kota Medan.
-Nilai apakah pertanyaan relevan.
-Tolak jika terlalu pendek (<3 kata) atau menyebut daerah luar Medan.
-Balas HANYA dalam JSON:
-{"valid": true/false, 
- "reason": "...",
- "suggestion": "...",
- "clean_question": "..."}
-"""
+        Anda adalah filter AI untuk pertanyaan seputar layanan publik dan fasilitas Pemerintah Kota Medan.
+
+        Tugas:
+        1. Nilai apakah pertanyaan relevan dengan topik pemerintahan atau layanan publik Kota Medan.
+        2. Terima pertanyaan yang menyebut dinas, lembaga, atau fasilitas di bawah Pemko Medan, termasuk singkatan umum:
+        Disnaker=Dinas Tenaga Kerja,
+        Dinkes=Dinas Kesehatan,
+        Disdik=Dinas Pendidikan,
+        Dishub=Dinas Perhubungan,
+        Disdukcapil=Dinas Kependudukan dan Pencatatan Sipil,
+        Kominfo=Dinas Komunikasi dan Informatika,
+        DLH=Dinas Lingkungan Hidup,
+        DPMPTSP=Dinas Penanaman Modal dan Pelayanan Terpadu Satu Pintu,
+        Dispar=Dinas Pariwisata dan Kebudayaan,
+        Dispora=Dinas Pemuda dan Olahraga,       
+        Satpol PP=Satuan Polisi Pamong Praja,
+        BPBD=Badan Penanggulangan Bencana Daerah,
+        Bappeda=Badan Perencanaan Pembangunan Daerah.
+        3. Tolak jika terlalu pendek (<3 kata) atau menyebut daerah di luar Medan.
+
+        Balas HANYA dalam JSON valid:
+        {"valid": true/false,
+        "reason": "...",
+        "suggestion": "...",
+        "clean_question": "..."}
+    """
         payload = {
             "model": "meta/llama-4-maverick-instruct",
             "messages": [
@@ -116,7 +133,7 @@ Balas HANYA dalam JSON:
                 {"role": "user", "content": question.strip()}
             ],
             "temperature":  0.0,
-            "top_p": 1.0
+            "top_p": 0.8
         }
 
         resp = requests.post(url, headers=headers, json=payload, timeout=20)
