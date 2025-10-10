@@ -105,19 +105,27 @@ def preprocess_question_with_ai(question: str):
         Tugas:
         1. Nilai apakah pertanyaan relevan dengan topik pemerintahan atau layanan publik Kota Medan.
         2. Terima pertanyaan yang menyebut dinas, lembaga, atau fasilitas di bawah Pemko Medan, termasuk singkatan umum:
-        Disnaker=Dinas Tenaga Kerja,
-        Dinkes=Dinas Kesehatan,
-        Disdik=Dinas Pendidikan,
-        Dishub=Dinas Perhubungan,
-        Disdukcapil=Dinas Kependudukan dan Pencatatan Sipil,
-        Kominfo=Dinas Komunikasi dan Informatika,
-        DLH=Dinas Lingkungan Hidup,
-        DPMPTSP=Dinas Penanaman Modal dan Pelayanan Terpadu Satu Pintu,
-        Dispar=Dinas Pariwisata dan Kebudayaan,
-        Dispora=Dinas Pemuda dan Olahraga,       
-        Satpol PP=Satuan Polisi Pamong Praja,
-        BPBD=Badan Penanggulangan Bencana Daerah,
-        Bappeda=Badan Perencanaan Pembangunan Daerah.
+            Disnaker=Dinas Ketenagakerjaan,
+            Dinkes=Dinas Kesehatan,
+            Disdik=Dinas Pendidikan,
+            Dishub=Dinas Perhubungan,
+            Dukcapil=Dinas Kependudukan dan Pencatatan Sipil,
+            Kominfo=Dinas Komunikasi dan Informatika,
+            DLH=Dinas Lingkungan Hidup,
+            DPMPTSP=Dinas Penanaman Modal dan Pelayanan Terpadu Satu Pintu,
+            Dispar=Dinas Pariwisata,
+            Damkar=DinasPemadam Kebakaran dan Penyelamatan,
+            Dinas KUKMPP=Dinas Koperasi, Usaha Kecil, Menengah, Perdagangan dan Perindustrian,
+            DKP3=Dinas Ketahanan Pangan Pertanian Perikanan,
+            P3APMPPKB=Dinas Pemberdayaan Perempuan, Perlindungan Anak, Pemberdayaan Masyarakat dan Pengendalian Penduduk dan Keluarga Berencana,
+            Dispusar=Dinas Perpustakaan dan Kearsipan,
+            Disperkimcikataru=Dinas Perumahan, Kawasan Pemukiman, Cipta Karya dan Tata Ruang,
+            Dinsos=Dinas Sosial
+            SDABMBK=Dinas Sumber Daya Air, Bina Marga dan Bina Konstruksi,
+            Dispora=Dinas Pemuda dan Olahraga,       
+            Satpol PP=Satuan Polisi Pamong Praja,
+            BPBD=Badan Penanggulangan Bencana Daerah,
+            Bappeda=Badan Perencanaan Pembangunan Daerah.
         3. Tolak jika terlalu pendek (<3 kata) atau menyebut daerah di luar Medan.
 
         Balas HANYA dalam JSON valid:
