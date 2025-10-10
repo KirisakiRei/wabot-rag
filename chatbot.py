@@ -80,4 +80,4 @@ if __name__ == "__main__":
             print("👋 Keluar...")
             break
         resp = ask_question(q)
-        pretty_print_response(resp)
+        pretty_print_response(resp,q)
