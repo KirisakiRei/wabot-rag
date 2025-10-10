@@ -30,40 +30,36 @@ def pretty_print_response(resp):
     if status == "success":
         print(f"✅ Status: {status}")
         meta = resp["data"]["metadata"]
-        print(f"📌 Pertanyaan Asli    : {meta['original_question']}")
-        print(f"🧹 Pertanyaan Normal  : {meta.get('normalized_question', '(tidak tersedia)')}")
-        print(f"📱 WA Number          : {meta['wa_number']}")
-        print(f"📂 Category           : {meta['category_used']}")
-        print(f"🔍 Total Found        : {meta['total_found']}")
+        print(f"📌 Pertanyaan Asli    : {meta.get('original_question', '-')}")
+        print(f"🧹 Normalized         : {meta.get('normalized_question', '-')}")
+        print(f"🤖 AI Cleaned         : {meta.get('ai_clean_question', '(tidak ada perubahan)')}")
+        print(f"📱 WA Number          : {meta.get('wa_number', '-')}")
+        print(f"📂 Category Detected  : {meta.get('detected_category', '-')}")
+        print(f"🔍 Total Found        : {meta.get('total_found', '-')}")
         print("-" * 60)
+
         for i, item in enumerate(resp["data"]["similar_questions"], 1):
-            print(f"[{i}] Q: {item['question']}")
-            print(f"    Answer ID : {item['answer_id']}")
-            print(f"    Category  : {item.get('category_id')}")
+            print(f"[{i}] Q: {item.get('question', '-')}")
+            print(f"    Answer ID : {item.get('answer_id', '-')}")
+            print(f"    Category  : {item.get('category_id', '-')}")
             print(f"    Dense     : {fmt_score(item.get('dense_score'))}")
             print(f"    Overlap   : {fmt_score(item.get('overlap_score'))}")
-            print(f"    Final     : {fmt_score(item.get('final_score'))}")
             print(f"    Note      : {item.get('note', '-')}")
             print()
 
     elif status == "low_confidence":
         print("⚠️ Low confidence")
         print(f"Message: {resp.get('message')}")
-        # kalau ada normalized question di metadata, tampilkan juga
-        meta = resp.get("metadata", {})
-        if meta:
-            print(f"📌 Pertanyaan Asli    : {meta.get('original_question', '-')}")
-            print(f"🧹 Pertanyaan Normal  : {meta.get('normalized_question', '-')}")
+        if "suggestion" in resp:
+            print(f"Suggestion: {resp['suggestion']}")
         print("-" * 60)
-        # tampilkan kandidat debug (dense, overlap, final)
         debug_candidates = resp.get("debug_rejected") or resp.get("debug_top_candidates")
         if debug_candidates:
             print("🔎 Kandidat terdekat:")
             for cand in debug_candidates:
-                print(f"- Q: {cand['question']}")
+                print(f"- Q: {cand.get('question', '-')}")
                 print(f"    Dense   : {fmt_score(cand.get('dense_score'))}")
                 print(f"    Overlap : {fmt_score(cand.get('overlap_score'))}")
-                print(f"    Final   : {fmt_score(cand.get('final_score'))}")
                 print()
 
     else:
