@@ -39,7 +39,7 @@ CATEGORY_KEYWORDS = {
         "sekolah", "guru", "siswa", "ppdb", "beasiswa", "pendidikan", "kuliah", "universitas", "murid", "kip"
     ],
     "019707b1-ebb6-708f-ad4d-bfc65d05f299": [  # Layanan Masyarakat
-        "pengaduan", "izin", "permohonan", "pelayanan", "bantuan", "masyarakat", "surat",
+        "pengaduan", "izin", "pelayanan", "bantuan", "masyarakat", "surat","usaha"
     ],
     "0196f6b9-ba96-70f1-a930-3b89e763170f": [  # Struktur Organisasi
         "kepala dinas", "kadis", "sekretaris", "jabatan", "struktur", "pimpinan"
@@ -127,8 +127,8 @@ def preprocess_question_with_ai(question: str):
                 {"role": "system", "content": system_prompt.strip()},
                 {"role": "user", "content": question.strip()}
             ],
-            "temperature":  0.0,
-            "top_p": 0.6
+            "temperature":  0.1,
+            "top_p": 0.4
         }
 
         resp = requests.post(url, headers=headers, json=payload, timeout=20)
@@ -154,7 +154,7 @@ def preprocess_question_with_ai(question: str):
 @app.route("/api/search", methods=["POST"])
 def search():
     try:
-        t0 = time.time()  # ⏱️ total start
+        t0 = time.time()  # total timer
         
         data = request.json
         if not data or "question" not in data:
@@ -163,21 +163,25 @@ def search():
         raw_question = data["question"].strip()
         wa_number = data.get("wa_number", "unknown")
 
-        # ========== ⏱️ AI Filter timing ==========
+        # ========== AI FILTER + TIMER ==========
         t_ai_start = time.time()
         ai_filter = preprocess_question_with_ai(raw_question)
         ai_time = time.time() - t_ai_start
 
+        # Ambil data debug dari AI
+        ai_debug = {
+            "ai_reason": ai_filter.get("reason", "-"),
+            "ai_suggestion": ai_filter.get("suggestion", "-"),
+            "ai_clean_question": ai_filter.get("clean_question", raw_question)
+        }
+
+        # Jika AI filter menolak pertanyaan
         if not ai_filter.get("valid", True):
             return jsonify({
                 "status": "low_confidence",
                 "message": ai_filter.get("reason", "Pertanyaan tidak valid"),
                 "suggestion": ai_filter.get("suggestion", "Silakan ajukan pertanyaan yang lebih spesifik."),
-                "ai_debug": {
-                    "ai_reason": ai_filter.get("reason", "-"),
-                    "ai_suggestion": ai_filter.get("suggestion", "-"),
-                    "ai_clean_question": ai_filter.get("clean_question", "-")
-                },
+                "ai_debug": ai_debug,
                 "timing": {
                     "ai_filter_sec": round(ai_time, 3),
                     "embedding_sec": 0.0,
@@ -186,19 +190,18 @@ def search():
                 }
             }), 200
 
+        # ========== NORMALISASI & KATEGORI ==========
         question = normalize_text(ai_filter.get("clean_question", raw_question))
         question = clean_location_terms(question)
-
-        # ========== ⏱️ Deteksi kategori ==========
         category_data = detect_category(question)
         category_id = category_data["id"] if category_data else None
 
-        # ========== ⏱️ Embedding timing ==========
+        # ========== EMBEDDING TIMER ==========
         t_embed = time.time()
         query_vector = model.encode("query: " + question).tolist()
         embedding_time = time.time() - t_embed
 
-        # ========== ⏱️ Qdrant search timing ==========
+        # ========== QDRANT SEARCH TIMER ==========
         t_qdrant = time.time()
         query_filter = None
         if category_id:
@@ -228,7 +231,7 @@ def search():
         )
         qdrant_time = time.time() - t_qdrant
 
-        # === combine results (tanpa ubah logika lama) ===
+        # ========== GABUNG HASIL ==========
         combined = {}
         for i, h in enumerate(dense_hits):
             score = 1 / (i + 1)
@@ -248,15 +251,11 @@ def search():
             dense_score = getattr(h, "score", 0.0)
             overlap = keyword_overlap(question, h.payload["question"])
 
-            accepted = False
-            note = None
-
+            accepted, note = False, None
             if dense_score >= 0.90:
-                accepted = True
-                note = "auto_accepted_by_dense"
+                accepted, note = True, "auto_accepted_by_dense"
             elif 0.80 <= dense_score < 0.90 and overlap > 0.2:
-                accepted = True
-                note = "accepted_by_overlap"
+                accepted, note = True, "accepted_by_overlap"
 
             if accepted:
                 results.append({
@@ -274,13 +273,14 @@ def search():
                     "overlap_score": float(overlap)
                 })
 
-        total_time = time.time() - t0  # total waktu request
+        total_time = time.time() - t0
 
-        # ========== RESPONSE ==========
+        # ========== HANDLE LOW CONFIDENCE ==========
         if not results:
             return jsonify({
                 "status": "low_confidence",
                 "message": "Tidak ada hasil cukup relevan",
+                "ai_debug": ai_debug,  # 🔥 tampilkan hasil AI meski tidak relevan
                 "debug_rejected": rejected,
                 "timing": {
                     "ai_filter_sec": round(ai_time, 3),
@@ -290,6 +290,7 @@ def search():
                 }
             }), 200
 
+        # ========== SUCCESS ==========
         return jsonify({
             "status": "success",
             "data": {
@@ -303,6 +304,7 @@ def search():
                     "detected_category": category_data["name"] if category_data else "Global"
                 }
             },
+            "ai_debug": ai_debug,  # 🔥 tampilkan debug juga saat sukses
             "timing": {
                 "ai_filter_sec": round(ai_time, 3),
                 "embedding_sec": round(embedding_time, 3),
@@ -314,6 +316,7 @@ def search():
     except Exception as e:
         logger.error(f"Error in search: {str(e)}", exc_info=True)
         return error_response("ServerError", "Kesalahan internal", detail=str(e))
+
 
 def error_response(error_type, message, detail=None, code=500):
     payload = {"status": "error", "error": {"type": error_type, "message": message}}
