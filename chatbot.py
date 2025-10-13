@@ -1,79 +1,75 @@
-import requests
-import json
-import time
+import requests, json, time
 
-API_URL = "http://127.0.0.1:5000/api/search"
+def run_chatbot():
+    print("\n🤖 Chatbot Tester (Ketik 'exit' untuk keluar)\n")
 
-def fmt_score(s):
-    return f"{s:.3f}" if isinstance(s, (int, float)) else "-"
+    while True:
+        user_input = input("Anda: ").strip()
+        if user_input.lower() == "exit":
+            print("👋 Keluar...")
+            break
 
-print("🤖 Chatbot Tester (Ketik 'exit' untuk keluar)\n")
+        payload = {"question": user_input}
+        try:
+            t0 = time.time()
+            resp = requests.post("http://localhost:5000/api/search", json=payload, timeout=60)
+            data = resp.json()
+            total = round(time.time() - t0, 3)
+        except Exception as e:
+            print(f"❌ Error koneksi ke server: {e}")
+            continue
 
-while True:
-    user_q = input("Anda: ").strip()
-    if user_q.lower() == "exit":
-        print("👋 Keluar...")
-        break
+        print("=" * 60)
 
-    payload = {"question": user_q}
-    t0 = time.time()
-    resp = requests.post(API_URL, json=payload)
-    elapsed = time.time() - t0
+        status = data.get("status", "unknown").upper()
+        print(f"⚙️ STATUS: {status}")
+        timing = data.get("timing", {})
+        print(f"⏱️ AI Filter: {timing.get('ai_domain_sec',0)}s | Relevance: {timing.get('ai_relevance_sec',0)}s")
+        print(f"🔢 Embedding: {timing.get('embedding_sec',0)}s | Qdrant: {timing.get('qdrant_sec',0)}s")
+        print(f"⚡ Total: {timing.get('total_sec',total)}s")
 
-    try:
-        data = resp.json()
-    except Exception as e:
-        print(f"⚠️ Response error: {e}")
-        print(resp.text)
-        continue
+        print("-" * 60)
+        meta = data.get("data", {}).get("metadata", {})
+        if "original_question" in meta:
+            print(f"📌 Original: {meta['original_question']}")
+        if "final_question" in meta:
+            print(f"🤖 Final: {meta['final_question']}")
+        if "category" in meta:
+            print(f"📂 Category: {meta['category']}")
 
-    print("=" * 60)
-    print(f"✅ STATUS: {data.get('status', 'unknown').upper()}")
-
-    timing = data.get("timing", {})
-    print(f"⏱️ AI Filter    : {timing.get('ai_sec', timing.get('ai_filter_sec', 0.0)):.3f}s")
-    print(f"🔢 Embedding    : {timing.get('embedding_sec', 0.0):.3f}s")
-    print(f"📚 Qdrant Search: {timing.get('qdrant_sec', 0.0):.3f}s")
-    print(f"⚡ Total         : {timing.get('total_sec', elapsed):.3f}s")
-    print("-" * 60)
-
-    # 🔹 tampilkan metadata debug AI
-    ai_debug = data.get("ai_debug") or data.get("data", {}).get("metadata", {})
-    if ai_debug:
-        print("🤖 AI DEBUG:")
-        print(f"   Reason        : {ai_debug.get('ai_reason', '-')}")
-        print(f"   Reformulated  : {ai_debug.get('ai_reformulated', '-')}")
-        print(f"   Cleaned       : {ai_debug.get('ai_clean_question', '-')}")
-        print()
-
-    # 🔹 tampilkan metadata umum
-    meta = data.get("data", {}).get("metadata", {})
-    if meta:
-        print(f"📌 Original     : {meta.get('original_question', '-')}")
-        print(f"🤖 Final / Clean: {meta.get('final_question', meta.get('ai_clean_question', '-'))}")
-        print(f"📂 Category     : {meta.get('category', meta.get('detected_category', '-'))}")
-        print(f"🔍 Total Found  : {meta.get('total_found', '-')}")
         print("-" * 60)
 
-    # 🔹 tampilkan hasil similarity
-    results = data.get("data", {}).get("similar_questions", [])
-    if results:
-        for i, r in enumerate(results, 1):
-            print(f"[{i}] Q: {r.get('question')}")
-            print(f"    Dense     : {fmt_score(r.get('dense_score'))}")
-            print(f"    Overlap   : {fmt_score(r.get('overlap_score'))}")
-            print(f"    Note      : {r.get('note', '-')}")
-            print()
-    else:
-        if data.get("status") == "low_confidence":
-            print("⚠️ Tidak ada hasil relevan.")
-            debug_rej = data.get("debug_rejected", [])
-            if debug_rej:
-                print("🔎 Kandidat Terdekat:")
-                for r in debug_rej:
-                    print(f"- Q: {r.get('question', '-')}")
-                    print(f"    Dense   : {fmt_score(r.get('dense_score'))}")
-                    print(f"    Overlap : {fmt_score(r.get('overlap_score'))}")
-                    print()
-    print("=" * 60)
-    print(f"🕒 Total waktu (client): {elapsed:.3f}s\n")
+        # === HANDLE LOW CONFIDENCE ===
+        if status.lower() == "low_confidence":
+            reason = data.get("message", "-")
+            ai_debug = data.get("ai_debug", {})
+            print(f"⚠️ LOW CONFIDENCE")
+            print(f"Reason     : {reason}")
+            if "reason" in ai_debug:
+                print(f"AI Reason  : {ai_debug.get('reason','-')}")
+            if "reformulated_question" in ai_debug:
+                print(f"AI Reform  : {ai_debug.get('reformulated_question','-')}")
+            if "suggestion" in ai_debug:
+                print(f"Suggestion : {ai_debug.get('suggestion','-')}")
+
+            # tampilkan rejected list juga
+            rej = data.get("debug_rejected", [])
+            if rej:
+                print("🔎 Kandidat terdekat:")
+                for r in rej[:3]:
+                    print(f"- Q: {r['question']}")
+                    print(f"  Dense: {r['dense_score']:.3f} | Overlap: {r['overlap_score']:.3f}")
+            print("=" * 60)
+            continue
+
+        # === HANDLE SUCCESS ===
+        sim = data.get("data", {}).get("similar_questions", [])
+        if not sim:
+            print("Tidak ada hasil ditemukan.")
+        else:
+            print(f"🔍 Total Found: {len(sim)}\n")
+            for i, s in enumerate(sim, 1):
+                print(f"[{i}] Q: {s['question']}")
+                print(f"    Dense: {s['dense_score']:.3f} | Overlap: {s['overlap_score']:.3f} | Note: {s.get('note','-')}")
+
+        print("=" * 60)
