@@ -70,7 +70,22 @@ def tokenize_and_filter(t):
 
 def keyword_overlap(a, b):
     A, B = set(tokenize_and_filter(a)), set(tokenize_and_filter(b))
-    return len(A & B) / len(A | B) if A and B else 0.0
+    if not A or not B:
+        return 0.0
+    return len(A & B) / len(A | B)
+
+def shorten_question(text):
+    if not text:
+        return text
+    text = re.sub(r"yang diperlukan untuk\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"yang dibutuhkan untuk\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"yang harus dilakukan\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"untuk\s+mengurus\s+", "mengurus ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+", " ", text).strip()
+    words = text.split()
+    if len(words) > 15:
+        text = " ".join(words[:15]) + "..."
+    return text.strip()
 
 # ==========================================================
 # 🔹 AI FILTER (PRE)
@@ -78,18 +93,15 @@ def keyword_overlap(a, b):
 def ai_filter_pre(question):
     try:
         url = "https://dekallm.cloudeka.ai/v1/chat/completions"
-        headers = {
-            "Authorization": "Bearer sk-6FaPtqd1W5aj0z_-AbsKBA",
-            "Content-Type": "application/json"
-        }
+        headers = {"Authorization": "Bearer sk-6FaPtqd1W5aj0z_-AbsKBA", "Content-Type": "application/json"}
         system_prompt = """
 Anda adalah filter AI untuk pertanyaan seputar Pemerintah Kota Medan.
-Putuskan apakah pertanyaan pengguna relevan dengan konteks pemerintahan, dinas, layanan publik, atau fasilitas di Kota Medan.
+Tugas: menilai apakah pertanyaan pengguna relevan dengan pemerintahan, dinas, layanan publik, atau fasilitas di Kota Medan.
 
 Kriteria valid:
-- Menyebut dinas, kepala dinas, layanan publik, perizinan, pendidikan, kesehatan, bantuan sosial, pajak, fasilitas umum di Kota Medan.
-Kriteria tidak valid:
-- Menyebut wilayah di luar Kota Medan.
+- Menyebut dinas, kepala dinas, layanan publik, izin, pendidikan, kesehatan, bantuan sosial, fasilitas umum di Medan.
+Tidak valid:
+- Menyebut daerah di luar Kota Medan.
 - Tidak berkaitan dengan layanan publik atau terlalu pendek.
 
 Balas hanya JSON:
@@ -115,48 +127,21 @@ Balas hanya JSON:
 # ==========================================================
 # 🔹 AI POST CHECK (RELEVANCE)
 # ==========================================================
-def ensure_interrogative_form(text):
-    if not text:
-        return text
-    lower = text.lower().strip()
-    if lower.startswith(("bagaimana","apa","dimana","siapa","kapan")):
-        return text
-    if any(w in lower for w in ["prosedur","langkah","cara"]):
-        return "Bagaimana " + text.strip().rstrip("?") + "?"
-    return "Bagaimana cara " + text.strip().rstrip("?") + "?"
-
-def shorten_question(text):
-    if not text:
-        return text.strip()
-    # hilangkan frasa bertele-tele
-    text = re.sub(r"yang diperlukan untuk\s*", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"yang dibutuhkan untuk\s*", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"yang harus dilakukan\s*", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"untuk\s+mengurus\s+", "mengurus ", text, flags=re.IGNORECASE)
-    text = re.sub(r"\s+", " ", text).strip()
-    # potong jika >15 kata
-    words = text.split()
-    if len(words) > 15:
-        text = " ".join(words[:15]) + "..."
-    return text
-
 def ai_check_relevance(user_q, rag_q):
     try:
         url = "https://dekallm.cloudeka.ai/v1/chat/completions"
-        headers = {
-            "Authorization": "Bearer sk-6FaPtqd1W5aj0z_-AbsKBA",
-            "Content-Type": "application/json"
-        }
+        headers = {"Authorization": "Bearer sk-6FaPtqd1W5aj0z_-AbsKBA", "Content-Type": "application/json"}
         system_prompt = """
-Anda memeriksa apakah hasil pencarian RAG sesuai dengan maksud pertanyaan pengguna.
+Tugas Anda memeriksa apakah hasil pencarian RAG sesuai dengan maksud pertanyaan pengguna.
 Balas hanya JSON:
 {"relevant": true/false, "reason": "...", "reformulated_question": "..."}
 
 Kriteria:
 - relevan jika hasil menjawab inti pertanyaan user.
-- jika tidak relevan, ubah pertanyaan agar singkat, jelas, dan berbentuk pertanyaan tanya (apa, bagaimana, siapa, dimana, kapan).
-- jangan ubah istilah umum seperti KTP, KK, Kominfo, Disnaker.
+- jika tidak relevan, ubah pertanyaan agar singkat, jelas, berbentuk pertanyaan (apa, siapa, dimana, bagaimana).
+- hanya gunakan satu kata tanya.
 - maksimal 15 kata.
+- jangan tambahkan konteks baru, fokus pada topik layanan publik Pemko Medan.
 """
         user_prompt = f"User Question: {user_q}\nRAG Result: {rag_q}"
         payload = {
@@ -174,9 +159,7 @@ Kriteria:
         if not match:
             return {"relevant": True, "reason": "-", "reformulated_question": ""}
         parsed = json.loads(match.group(0))
-        parsed["reformulated_question"] = ensure_interrogative_form(
-            shorten_question(parsed.get("reformulated_question", ""))
-        )
+        parsed["reformulated_question"] = shorten_question(parsed.get("reformulated_question", ""))
         return parsed
     except Exception as e:
         logger.error(f"[AI-Post] {e}")
@@ -226,7 +209,7 @@ def search():
         if not dense_hits:
             return jsonify({"status": "low_confidence", "message": "Tidak ada hasil ditemukan"}), 200
 
-        # --- RELEVANCE CHECK
+        # --- POST CHECK (AI RELEVANCE)
         t_post = time.time()
         relevance = ai_check_relevance(user_q, dense_hits[0].payload["question"])
         t_post_time = time.time() - t_post
@@ -238,16 +221,19 @@ def search():
                 dense_hits = qdrant.search("knowledge_bank", query_vector=qvec, limit=5, query_filter=filt)
                 question = new_q
 
-        # --- SCORING LOGIC
+        # --- SCORING
         results, rejected = [], []
         for h in dense_hits[:5]:
             dense = float(h.score)
             overlap = keyword_overlap(question, h.payload["question"])
-            note, accepted = "-", False
+            note = "-"
+            accepted = False
+
             if dense >= 0.90:
                 accepted, note = True, "auto_accepted_by_dense"
             elif 0.80 <= dense < 0.90 and overlap > 0.2:
                 accepted, note = True, "accepted_by_overlap"
+
             item = {
                 "question": h.payload["question"],
                 "answer_id": h.payload["answer_id"],
@@ -256,6 +242,7 @@ def search():
                 "overlap_score": overlap,
                 "note": note
             }
+
             (results if accepted else rejected).append(item)
 
         total_time = time.time() - t0

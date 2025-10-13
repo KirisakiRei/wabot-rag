@@ -1,157 +1,143 @@
 import requests
-import json
-import time
 import csv
+import datetime
 import os
-from datetime import datetime
+import time
 
-API_URL = "http://localhost:5000/api/search"
+API_URL = "http://127.0.0.1:5000/api/search"
 LOG_FILE = "chat_log.csv"
 
-# ==========================================================
-# 🔹 Utility: setup log file jika belum ada
-# ==========================================================
+# ===============================
+# 🔹 Setup Logging ke CSV
+# ===============================
 if not os.path.exists(LOG_FILE):
     with open(LOG_FILE, mode="w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow([
-            "timestamp", "user_question", "status", "ai_reason", "ai_reformulated",
-            "category", "dense_top", "overlap_top", "total_found",
-            "ai_domain_sec", "ai_relevance_sec", "embedding_sec", "qdrant_sec", "total_sec"
+            "timestamp", "question", "status", "ai_reason", "ai_reformulated",
+            "dense_top", "category", "ai_domain_sec", "ai_relevance_sec",
+            "embedding_sec", "qdrant_sec", "total_sec"
         ])
 
-# ==========================================================
-# 🔹 Fungsi Helper
-# ==========================================================
-def fmt_time(sec):
-    return f"{sec:.3f}s" if sec else "-"
-
-def log_to_csv(row):
-    """Simpan hasil ke file log untuk laporan performa"""
+def log_to_csv(data):
     with open(LOG_FILE, mode="a", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(row)
+        writer.writerow([
+            datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            data.get("question", "-"),
+            data.get("status", "-"),
+            data.get("ai_reason", "-"),
+            data.get("ai_reformulated", "-"),
+            data.get("dense_top", "-"),
+            data.get("category", "-"),
+            data.get("ai_domain_sec", "-"),
+            data.get("ai_relevance_sec", "-"),
+            data.get("embedding_sec", "-"),
+            data.get("qdrant_sec", "-"),
+            data.get("total_sec", "-")
+        ])
 
-# ==========================================================
-# 🔹 Chatbot CLI
-# ==========================================================
-def run_chatbot():
-    print("\n🤖 Chatbot Tester (Ketik 'exit' untuk keluar)\n")
+# ===============================
+# 🔹 Fungsi Cetak Debug
+# ===============================
+def print_timing(t):
+    print(f"⏱️ AI Filter: {t.get('ai_domain_sec',0):.3f}s | Relevance: {t.get('ai_relevance_sec',0):.3f}s")
+    print(f"🔢 Embedding: {t.get('embedding_sec',0):.3f}s | Qdrant: {t.get('qdrant_sec',0):.3f}s")
+    print(f"⚡ Total: {t.get('total_sec',0):.3f}s")
 
-    while True:
-        user_input = input("Anda: ").strip()
-        if not user_input:
-            continue
-        if user_input.lower() == "exit":
-            print("👋 Keluar...")
-            break
+def fmt_score(s):
+    return f"{float(s):.3f}" if isinstance(s, (float, int)) else "-"
 
-        payload = {"question": user_input}
+# ===============================
+# 🔹 Chatbot Loop
+# ===============================
+print("🤖 Chatbot Tester (Ketik 'exit' untuk keluar)\n")
 
-        try:
-            t0 = time.time()
-            resp = requests.post(API_URL, json=payload, timeout=60)
-            data = resp.json()
-            total_time = round(time.time() - t0, 3)
-        except Exception as e:
-            print(f"❌ Gagal koneksi ke API: {e}")
-            continue
+while True:
+    user_input = input("Anda: ").strip()
+    if user_input.lower() in ["exit", "keluar", "quit"]:
+        print("👋 Keluar...")
+        break
+    if not user_input:
+        continue
 
-        print("=" * 60)
+    payload = {"question": user_input}
+    start = time.time()
+    try:
+        resp = requests.post(API_URL, json=payload, timeout=60)
+        data = resp.json()
+    except Exception as e:
+        print(f"❌ Gagal konek ke API: {e}")
+        continue
 
-        status = data.get("status", "unknown").upper()
-        timing = data.get("timing", {})
+    end = time.time()
+    status = data.get("status", "-")
+    timing = data.get("timing", {})
 
-        print(f"⚙️ STATUS: {status}")
-        print(f"⏱️ AI Filter: {fmt_time(timing.get('ai_domain_sec', 0))} | Relevance: {fmt_time(timing.get('ai_relevance_sec', 0))}")
-        print(f"🔢 Embedding: {fmt_time(timing.get('embedding_sec', 0))} | Qdrant: {fmt_time(timing.get('qdrant_sec', 0))}")
-        print(f"⚡ Total: {fmt_time(timing.get('total_sec', total_time))}")
+    print("=" * 60)
+    print(f"⚙️ STATUS: {status.upper()}")
+    print_timing(timing)
+    print("-" * 60)
+
+    # LOW CONFIDENCE
+    if status == "low_confidence":
+        print("⚠️ LOW CONFIDENCE")
+        print(f"Message     : {data.get('message', '-')}")
+        ai_debug = data.get("ai_debug", {})
+        print(f"AI Reason   : {ai_debug.get('reason', ai_debug.get('ai_reason','-'))}")
+        print(f"Suggestion  : {ai_debug.get('suggestion', '-')}")
+        print(f"Reformulate : {ai_debug.get('reformulated_question', ai_debug.get('clean_question','-'))}")
         print("-" * 60)
 
+        rejected = data.get("debug_rejected", [])
+        if rejected:
+            print("🔎 Kandidat terdekat:")
+            for cand in rejected:
+                print(f"- Q: {cand.get('question','-')}")
+                print(f"  Dense: {fmt_score(cand.get('dense_score'))} | Overlap: {fmt_score(cand.get('overlap_score'))}")
+            print()
+        print("=" * 60)
+
+        log_to_csv({
+            "question": user_input,
+            "status": "low_confidence",
+            "ai_reason": ai_debug.get("reason", "-"),
+            "ai_reformulated": ai_debug.get("reformulated_question", "-"),
+            "dense_top": "-",
+            "category": "-",
+            **timing
+        })
+        continue
+
+    # SUCCESS
+    if status == "success":
         meta = data.get("data", {}).get("metadata", {})
-        ai_debug = data.get("ai_debug", {})
+        results = data.get("data", {}).get("similar_questions", [])
+        ai_reason = meta.get("ai_reason", "-")
+        ai_reformulated = meta.get("ai_reformulated", "-")
 
-        # ======================================================
-        # ⚠️ LOW CONFIDENCE CASE
-        # ======================================================
-        if status.lower() == "low_confidence":
-            print(f"⚠️ LOW CONFIDENCE")
-            print(f"Message     : {data.get('message', '-')}")
-            print(f"AI Reason   : {ai_debug.get('reason', '-')}")
-            print(f"Suggestion  : {ai_debug.get('suggestion', '-')}")
-            print(f"Reformulate : {ai_debug.get('reformulated_question', '-')}")
-            print("-" * 60)
-
-            rejected = data.get("debug_rejected", [])
-            if rejected:
-                print("🔎 Kandidat terdekat:")
-                for r in rejected[:3]:
-                    print(f"- Q: {r['question']}")
-                    print(f"  Dense: {r['dense_score']:.3f} | Overlap: {r['overlap_score']:.3f}")
-            print("=" * 60)
-
-            # Simpan ke log
-            log_to_csv([
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                user_input,
-                "LOW_CONFIDENCE",
-                ai_debug.get("reason", "-"),
-                ai_debug.get("reformulated_question", "-"),
-                meta.get("category", "-"),
-                "-", "-", len(rejected),
-                timing.get("ai_domain_sec", 0),
-                timing.get("ai_relevance_sec", 0),
-                timing.get("embedding_sec", 0),
-                timing.get("qdrant_sec", 0),
-                timing.get("total_sec", total_time)
-            ])
-            continue
-
-        # ======================================================
-        # ✅ SUCCESS CASE
-        # ======================================================
         print(f"📌 Original     : {meta.get('original_question', '-')}")
         print(f"🤖 Final        : {meta.get('final_question', '-')}")
         print(f"📂 Category     : {meta.get('category', '-')}")
-        print(f"AI Reason       : {meta.get('ai_reason', '-')}")
-        print(f"AI Reformulated : {meta.get('ai_reformulated', '-')}")
+        print(f"AI Reason       : {ai_reason}")
+        print(f"AI Reformulated : {ai_reformulated}")
         print("-" * 60)
+        print(f"🔍 Total Found  : {meta.get('total_found', len(results))}\n")
 
-        sim = data.get("data", {}).get("similar_questions", [])
-        if not sim:
-            print("Tidak ada hasil relevan.")
-        else:
-            print(f"🔍 Total Found  : {len(sim)}")
+        for i, r in enumerate(results, 1):
+            print(f"[{i}] Q: {r['question']}")
+            print(f"    Dense: {fmt_score(r['dense_score'])} | Overlap: {fmt_score(r['overlap_score'])} | Note: {r.get('note','-')}")
             print()
-            for i, s in enumerate(sim, 1):
-                print(f"[{i}] Q: {s['question']}")
-                print(f"    Dense: {s['dense_score']:.3f} | Overlap: {s['overlap_score']:.3f} | Note: {s.get('note','-')}")
-                print()
-
-        # Simpan ke log
-        top_dense = sim[0]['dense_score'] if sim else "-"
-        top_overlap = sim[0]['overlap_score'] if sim else "-"
-        log_to_csv([
-            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            user_input,
-            "SUCCESS",
-            meta.get("ai_reason", "-"),
-            meta.get("ai_reformulated", "-"),
-            meta.get("category", "-"),
-            top_dense,
-            top_overlap,
-            len(sim),
-            timing.get("ai_domain_sec", 0),
-            timing.get("ai_relevance_sec", 0),
-            timing.get("embedding_sec", 0),
-            timing.get("qdrant_sec", 0),
-            timing.get("total_sec", total_time)
-        ])
-
         print("=" * 60)
 
-# ==========================================================
-# 🔹 Jalankan chatbot
-# ==========================================================
-if __name__ == "__main__":
-    run_chatbot()
+        log_to_csv({
+            "question": user_input,
+            "status": "success",
+            "ai_reason": ai_reason,
+            "ai_reformulated": ai_reformulated,
+            "dense_top": results[0]["dense_score"] if results else "-",
+            "category": meta.get("category", "-"),
+            **timing
+        })
+    else:
+        print(f"❌ Tidak diketahui: {data}")
