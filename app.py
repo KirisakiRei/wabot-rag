@@ -26,14 +26,14 @@ STOPWORDS = {
 }
 
 CATEGORY_KEYWORDS = {
-    "0196f6a8-9cb8-7385-8383-9d4f8fdcd396": ["ktp","kependudukan","kk","akta","kelahiran","kematian","domisili"],
-    "0196ccd1-d7f9-7252-b0a1-a67d4bc103a0": ["bpjs","kesehatan","rsud","puskesmas","klinik","vaksin","obat"],
-    "0196cd16-3a0a-726d-99b4-2e9c6dda5f64": ["sekolah","guru","siswa","ppdb","beasiswa","pendidikan"],
+    "0196f6a8-9cb8-7385-8383-9d4f8fdcd396": ["ktp","kk","kartu keluarga","kartu tanda penduduk","akta","kelahiran","kematian","domisili","SKTM","NIK"],
+    "0196ccd1-d7f9-7252-b0a1-a67d4bc103a0": ["bpjs","rsud","puskesmas","klinik","vaksin","pengobatan","berobat","posyandu","stunting","imunisasi"],
+    "0196cd16-3a0a-726d-99b4-2e9c6dda5f64": ["sekolah","PPDB","SPMB","guru","siswa","ppdb","beasiswa","pendidikan","prestasi","zonasi","afirmasi"],
     "019707b1-ebb6-708f-ad4d-bfc65d05f299": ["pengaduan","izin","pelayanan","bantuan","masyarakat","usaha"],
-    "0196f6b9-ba96-70f1-a930-3b89e763170f": ["kepala dinas","kadis","sekretaris","jabatan","struktur"],
+    "0196f6b9-ba96-70f1-a930-3b89e763170f": ["kepala dinas","kadis","sekretaris","jabatan","struktur organisasi"],
     "01970829-1054-72b2-bb31-16a34edd84fc": ["aturan","peraturan","perwali","perda","perpres","hukum"],
-    "0196f6c0-1178-733a-acd8-b8cb62eefe98": ["lokasi","alamat","kantor"],
-    "001970853-dd2e-716e-b90c-c4f79270f700": ["tugas","fungsi","profil","visi","misi"]
+    "0196f6c0-1178-733a-acd8-b8cb62eefe98": ["lokasi","alamat","kantor","posisi"],
+    "001970853-dd2e-716e-b90c-c4f79270f700": ["tugas","fungsi","tupoksi","profil","visi","misi"]
 }
 CATEGORY_NAMES = {
     "0196f6a8-9cb8-7385-8383-9d4f8fdcd396": "Kependudukan",
@@ -45,6 +45,9 @@ CATEGORY_NAMES = {
     "0196f6c0-1178-733a-acd8-b8cb62eefe98": "Lokasi Fasilitas Pemerintahan Kota Medan",
     "001970853-dd2e-716e-b90c-c4f79270f700": "Profil"
 }
+
+# Auto kumpulkan semua keyword dari kategori
+ALL_KEYWORDS = set(sum(CATEGORY_KEYWORDS.values(), []))
 
 # ==========================================================
 # 🔹 UTILITIES
@@ -88,6 +91,64 @@ def shorten_question(text):
     return text.strip()
 
 # ==========================================================
+# 🔹 DETEKSI PERTANYAAN SPESIFIK (HYBRID RULE + AI)
+# ==========================================================
+def ai_is_specific(q):
+    """AI fallback untuk pertanyaan ambigu"""
+    try:
+        url = "https://dekallm.cloudeka.ai/v1/chat/completions"
+        headers = {"Authorization": "Bearer sk-6FaPtqd1W5aj0z_-AbsKBA", "Content-Type": "application/json"}
+        sys_prompt = """
+Anda membantu sistem mendeteksi apakah pertanyaan sudah spesifik atau masih umum.
+Balas hanya JSON:
+{"specific": true/false, "reason": "..."}
+
+Kriteria:
+- Specific jika pertanyaan sudah punya objek dan maksud yang jelas (misal: urus KTP, daftar sekolah, siapa kepala dinas).
+- Not specific jika hanya menyebut topik umum (misal: KTP, izin, sekolah, Medan).
+"""
+        payload = {
+            "model": "meta/llama-4-maverick-instruct",
+            "messages": [
+                {"role": "system", "content": sys_prompt.strip()},
+                {"role": "user", "content": q.strip()}
+            ],
+            "temperature": 0.0,
+            "top_p": 0.5
+        }
+        resp = requests.post(url, headers=headers, json=payload, timeout=10)
+        content = resp.json()["choices"][0]["message"]["content"]
+        match = re.search(r"\{.*\}", content, re.DOTALL)
+        if match:
+            data = json.loads(match.group(0))
+            return data.get("specific", False)
+        return False
+    except Exception as e:
+        logger.error(f"[AI-SpecificCheck] {e}")
+        return False
+
+def is_specific_question(q):
+    q = q.lower().strip()
+
+    # 1️⃣ kata tanya + cukup panjang
+    if re.search(r"\b(apa|siapa|bagaimana|dimana|kapan)\b", q) and len(q.split()) > 3:
+        return True
+
+    # 2️⃣ kata kerja + entitas publik (auto dari ALL_KEYWORDS)
+    if re.search(r"(urus|buat|daftar|ambil|cek|lapor|perpanjang|bikin|cetak)", q):
+        if any(kw.lower() in q for kw in ALL_KEYWORDS):
+            return True
+
+    # 3️⃣ fallback AI untuk pertanyaan pendek atau ambigu
+    if len(q.split()) <= 3:
+        ai_check = ai_is_specific(q)
+        if ai_check:
+            logger.info("[PRE] AI fallback menilai pertanyaan spesifik.")
+            return True
+
+    return False
+
+# ==========================================================
 # 🔹 AI FILTER (PRE)
 # ==========================================================
 def ai_filter_pre(question):
@@ -96,16 +157,11 @@ def ai_filter_pre(question):
         headers = {"Authorization": "Bearer sk-6FaPtqd1W5aj0z_-AbsKBA", "Content-Type": "application/json"}
         system_prompt = """
 Anda adalah filter AI untuk pertanyaan seputar Pemerintah Kota Medan.
-Tugas: menilai apakah pertanyaan pengguna relevan dengan pemerintahan, dinas, layanan publik, atau fasilitas di Kota Medan.
-
-Kriteria valid:
-- Menyebut dinas, kepala dinas, layanan publik, izin, pendidikan, kesehatan, bantuan sosial, fasilitas umum di Medan.
-Tidak valid:
-- Menyebut daerah di luar Kota Medan.
-- Tidak berkaitan dengan layanan publik atau terlalu pendek.
-
 Balas hanya JSON:
-{"valid": true/false, "reason": "...", "suggestion": "...", "clean_question": "..."}
+{"valid": true/false, "reason": "...", "clean_question": "..."}
+
+Valid jika: membahas dinas, layanan publik, izin, fasilitas umum, atau kebijakan Pemko Medan.
+Tidak valid jika: menyebut daerah lain, selebriti, topik pribadi, atau tidak terkait pemerintahan.
 """
         payload = {
             "model": "meta/llama-4-maverick-instruct",
@@ -116,7 +172,7 @@ Balas hanya JSON:
             "temperature": 0.0,
             "top_p": 0.6
         }
-        resp = requests.post(url, headers=headers, json=payload, timeout=20)
+        resp = requests.post(url, headers=headers, json=payload, timeout=15)
         content = resp.json()["choices"][0]["message"]["content"].strip()
         match = re.search(r"\{.*\}", content, re.DOTALL)
         return json.loads(match.group(0)) if match else {"valid": True, "clean_question": question}
@@ -132,18 +188,15 @@ def ai_check_relevance(user_q, rag_q):
         url = "https://dekallm.cloudeka.ai/v1/chat/completions"
         headers = {"Authorization": "Bearer sk-6FaPtqd1W5aj0z_-AbsKBA", "Content-Type": "application/json"}
         system_prompt = """
-Tugas Anda memeriksa apakah hasil pencarian RAG sesuai dengan maksud pertanyaan pengguna.
+Tugas Anda mengevaluasi apakah hasil pencarian RAG sesuai dengan maksud pertanyaan pengguna.
 Balas hanya JSON:
 {"relevant": true/false, "reason": "...", "reformulated_question": "..."}
 
-Kriteria:
-- relevan jika hasil menjawab inti pertanyaan user.
-- jika tidak relevan, ubah pertanyaan agar singkat, jelas, berbentuk pertanyaan (apa, siapa, dimana, bagaimana).
-- hanya gunakan satu kata tanya.
-- maksimal 15 kata.
-- jangan tambahkan konteks baru, fokus pada topik layanan publik Pemko Medan.
+- Jika hasil sudah menjawab inti pertanyaan, tulis relevant:true.
+- Jika tidak, ubah pertanyaan jadi bentuk tanya singkat (apa, siapa, dimana, bagaimana, kapan).
+- Maksimal 15 kata, jangan tambah konteks baru.
 """
-        user_prompt = f"User Question: {user_q}\nRAG Result: {rag_q}"
+        user_prompt = f"User: {user_q}\nRAG Result: {rag_q}"
         payload = {
             "model": "meta/llama-4-maverick-instruct",
             "messages": [
@@ -153,7 +206,7 @@ Kriteria:
             "temperature": 0.1,
             "top_p": 0.5
         }
-        resp = requests.post(url, headers=headers, json=payload, timeout=20)
+        resp = requests.post(url, headers=headers, json=payload, timeout=15)
         content = resp.json()["choices"][0]["message"]["content"].strip()
         match = re.search(r"\{.*\}", content, re.DOTALL)
         if not match:
@@ -179,10 +232,15 @@ def search():
         user_q = data["question"].strip()
         wa = data.get("wa_number", "unknown")
 
-        # --- PRE FILTER
+        # --- DETEKSI SPESIFIK SEBELUM FILTER AI
         t_pre = time.time()
-        pre = ai_filter_pre(user_q)
+        if is_specific_question(user_q):
+            logger.info("[PRE] Pertanyaan spesifik - skip AI filter")
+            pre = {"valid": True, "clean_question": user_q}
+        else:
+            pre = ai_filter_pre(user_q)
         t_pre_time = time.time() - t_pre
+
         if not pre.get("valid", True):
             return jsonify({
                 "status": "low_confidence",
