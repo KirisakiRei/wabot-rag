@@ -3,11 +3,7 @@ from sentence_transformers import SentenceTransformer
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
 from config import CONFIG
-import logging
-import requests
-import json
-import re
-import time
+import logging, requests, json, re, time
 
 app = Flask(__name__)
 
@@ -77,10 +73,9 @@ def keyword_overlap(a, b):
     return len(A & B) / len(A | B) if A and B else 0.0
 
 # ==========================================================
-# 🔹 AI FILTER (Pre-Processing)
+# 🔹 AI FILTER (PRE)
 # ==========================================================
 def ai_filter_pre(question):
-    """AI menilai apakah pertanyaan relevan dengan konteks Pemko Medan"""
     try:
         url = "https://dekallm.cloudeka.ai/v1/chat/completions"
         headers = {
@@ -91,21 +86,14 @@ def ai_filter_pre(question):
 Anda adalah filter AI untuk pertanyaan seputar Pemerintah Kota Medan.
 Putuskan apakah pertanyaan pengguna relevan dengan konteks pemerintahan, dinas, layanan publik, atau fasilitas di Kota Medan.
 
-Kriteria valid (true):
-- Menyebut dinas, kepala dinas, pejabat, struktur, visi, misi, tugas, fungsi, layanan publik.
-- Berkaitan dengan administrasi, perizinan, pendidikan, kesehatan, bantuan sosial, pajak, fasilitas umum di Kota Medan.
-
-Kriteria tidak valid (false):
+Kriteria valid:
+- Menyebut dinas, kepala dinas, layanan publik, perizinan, pendidikan, kesehatan, bantuan sosial, pajak, fasilitas umum di Kota Medan.
+Kriteria tidak valid:
 - Menyebut wilayah di luar Kota Medan.
-- Tidak ada hubungannya dengan pemerintahan, layanan publik, atau terlalu pendek.
+- Tidak berkaitan dengan layanan publik atau terlalu pendek.
 
 Balas hanya JSON:
-{
- "valid": true/false,
- "reason": "...",
- "suggestion": "...",
- "clean_question": "..."
-}
+{"valid": true/false, "reason": "...", "suggestion": "...", "clean_question": "..."}
 """
         payload = {
             "model": "meta/llama-4-maverick-instruct",
@@ -117,21 +105,17 @@ Balas hanya JSON:
             "top_p": 0.6
         }
         resp = requests.post(url, headers=headers, json=payload, timeout=20)
-        data = resp.json()
-        reply = data["choices"][0]["message"]["content"].strip()
-        match = re.search(r"\{.*\}", reply, re.DOTALL)
-        if not match:
-            return {"valid": True, "clean_question": question}
-        return json.loads(match.group(0))
+        content = resp.json()["choices"][0]["message"]["content"].strip()
+        match = re.search(r"\{.*\}", content, re.DOTALL)
+        return json.loads(match.group(0)) if match else {"valid": True, "clean_question": question}
     except Exception as e:
-        logger.error(f"[AI-Filter] error: {e}")
+        logger.error(f"[AI-Filter] {e}")
         return {"valid": True, "clean_question": question}
 
 # ==========================================================
-# 🔹 AI POST CHECK (Relevance)
+# 🔹 AI POST CHECK (RELEVANCE)
 # ==========================================================
 def ensure_interrogative_form(text):
-    """Pastikan hasil reformulasi berbentuk pertanyaan"""
     if not text:
         return text
     lower = text.lower().strip()
@@ -141,6 +125,21 @@ def ensure_interrogative_form(text):
         return "Bagaimana " + text.strip().rstrip("?") + "?"
     return "Bagaimana cara " + text.strip().rstrip("?") + "?"
 
+def shorten_question(text):
+    if not text:
+        return text.strip()
+    # hilangkan frasa bertele-tele
+    text = re.sub(r"yang diperlukan untuk\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"yang dibutuhkan untuk\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"yang harus dilakukan\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"untuk\s+mengurus\s+", "mengurus ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+", " ", text).strip()
+    # potong jika >15 kata
+    words = text.split()
+    if len(words) > 15:
+        text = " ".join(words[:15]) + "..."
+    return text
+
 def ai_check_relevance(user_q, rag_q):
     try:
         url = "https://dekallm.cloudeka.ai/v1/chat/completions"
@@ -149,16 +148,15 @@ def ai_check_relevance(user_q, rag_q):
             "Content-Type": "application/json"
         }
         system_prompt = """
-Anda bertugas memeriksa apakah hasil pencarian RAG sesuai dengan maksud pertanyaan pengguna.
+Anda memeriksa apakah hasil pencarian RAG sesuai dengan maksud pertanyaan pengguna.
 Balas hanya JSON:
-{
- "relevant": true/false,
- "reason": "...",
- "reformulated_question": "..."
-}
-- Relevan jika hasil menjawab inti pertanyaan user.
-- Jika tidak sesuai konteks, bantu ubah pertanyaan agar lebih natural.
-- Reformulasi harus berbentuk pertanyaan tanya yang wajar.
+{"relevant": true/false, "reason": "...", "reformulated_question": "..."}
+
+Kriteria:
+- relevan jika hasil menjawab inti pertanyaan user.
+- jika tidak relevan, ubah pertanyaan agar singkat, jelas, dan berbentuk pertanyaan tanya (apa, bagaimana, siapa, dimana, kapan).
+- jangan ubah istilah umum seperti KTP, KK, Kominfo, Disnaker.
+- maksimal 15 kata.
 """
         user_prompt = f"User Question: {user_q}\nRAG Result: {rag_q}"
         payload = {
@@ -171,20 +169,21 @@ Balas hanya JSON:
             "top_p": 0.5
         }
         resp = requests.post(url, headers=headers, json=payload, timeout=20)
-        data = resp.json()
-        content = data["choices"][0]["message"]["content"].strip()
+        content = resp.json()["choices"][0]["message"]["content"].strip()
         match = re.search(r"\{.*\}", content, re.DOTALL)
-        if match:
-            parsed = json.loads(match.group(0))
-            parsed["reformulated_question"] = ensure_interrogative_form(parsed.get("reformulated_question",""))
-            return parsed
-        return {"relevant": True, "reason": "-", "reformulated_question": ""}
+        if not match:
+            return {"relevant": True, "reason": "-", "reformulated_question": ""}
+        parsed = json.loads(match.group(0))
+        parsed["reformulated_question"] = ensure_interrogative_form(
+            shorten_question(parsed.get("reformulated_question", ""))
+        )
+        return parsed
     except Exception as e:
-        logger.error(f"[AI-Post] error: {e}")
+        logger.error(f"[AI-Post] {e}")
         return {"relevant": True, "reason": "AI check failed", "reformulated_question": ""}
 
 # ==========================================================
-# 🔹 SEARCH ENDPOINT
+# 🔹 MAIN SEARCH
 # ==========================================================
 @app.route("/api/search", methods=["POST"])
 def search():
@@ -192,124 +191,115 @@ def search():
         t0 = time.time()
         data = request.json
         if not data or "question" not in data:
-            return jsonify({"error":"Field 'question' wajib diisi"}),400
+            return jsonify({"error": "Field 'question' wajib diisi"}), 400
 
         user_q = data["question"].strip()
-        wa = data.get("wa_number","unknown")
+        wa = data.get("wa_number", "unknown")
 
-        # ========== PRE FILTER AI ==========
+        # --- PRE FILTER
         t_pre = time.time()
         pre = ai_filter_pre(user_q)
-        t_pre_time = time.time()-t_pre
-
-        if not pre.get("valid",True):
+        t_pre_time = time.time() - t_pre
+        if not pre.get("valid", True):
             return jsonify({
-                "status":"low_confidence",
-                "message": pre.get("reason","Pertanyaan tidak relevan"),
+                "status": "low_confidence",
+                "message": pre.get("reason", "Pertanyaan tidak relevan"),
                 "ai_debug": pre,
-                "timing": {"ai_domain_sec":round(t_pre_time,3)}
-            }),200
+                "timing": {"ai_domain_sec": round(t_pre_time, 3)}
+            }), 200
 
-        question = normalize_text(clean_location_terms(pre.get("clean_question",user_q)))
+        question = normalize_text(clean_location_terms(pre.get("clean_question", user_q)))
         category = detect_category(question)
         cat_id = category["id"] if category else None
 
-        # ========== EMBEDDING ==========
+        # --- EMBEDDING
         t_emb = time.time()
-        qvec = model.encode("query: "+question).tolist()
-        emb_time = time.time()-t_emb
+        qvec = model.encode("query: " + question).tolist()
+        emb_time = time.time() - t_emb
 
-        # ========== QDRANT ==========
+        # --- QDRANT
         t_qd = time.time()
-        filt = None
-        if cat_id:
-            filt = models.Filter(must=[models.FieldCondition(key="category_id",match=models.MatchValue(value=cat_id))])
+        filt = models.Filter(must=[models.FieldCondition(key="category_id",
+                match=models.MatchValue(value=cat_id))]) if cat_id else None
         dense_hits = qdrant.search("knowledge_bank", query_vector=qvec, limit=5, query_filter=filt)
-        qd_time = time.time()-t_qd
-
+        qd_time = time.time() - t_qd
         if not dense_hits:
-            return jsonify({"status":"low_confidence","message":"Tidak ada hasil ditemukan"}),200
+            return jsonify({"status": "low_confidence", "message": "Tidak ada hasil ditemukan"}), 200
 
-        # ========== RELEVANCE AI POST CHECK ==========
+        # --- RELEVANCE CHECK
         t_post = time.time()
         relevance = ai_check_relevance(user_q, dense_hits[0].payload["question"])
-        t_post_time = time.time()-t_post
-
-        # Jika tidak relevan → reformulasi dan retry
-        if not relevance.get("relevant",True):
-            reformulated = relevance.get("reformulated_question","")
-            if reformulated:
-                logger.info(f"[RETRY] Reformulating: {reformulated}")
-                qvec = model.encode("query: "+reformulated).tolist()
+        t_post_time = time.time() - t_post
+        if not relevance.get("relevant", True):
+            new_q = relevance.get("reformulated_question", "")
+            if new_q:
+                logger.info(f"[RETRY] Reformulating: {new_q}")
+                qvec = model.encode("query: " + new_q).tolist()
                 dense_hits = qdrant.search("knowledge_bank", query_vector=qvec, limit=5, query_filter=filt)
-                question = reformulated
+                question = new_q
 
-        # ========== DENSE + OVERLAP LOGIC ==========
+        # --- SCORING LOGIC
         results, rejected = [], []
         for h in dense_hits[:5]:
             dense = float(h.score)
             overlap = keyword_overlap(question, h.payload["question"])
-            note, accepted = None, False
+            note, accepted = "-", False
             if dense >= 0.90:
                 accepted, note = True, "auto_accepted_by_dense"
             elif 0.80 <= dense < 0.90 and overlap > 0.2:
                 accepted, note = True, "accepted_by_overlap"
-
             item = {
                 "question": h.payload["question"],
                 "answer_id": h.payload["answer_id"],
                 "category_id": h.payload.get("category_id"),
                 "dense_score": dense,
                 "overlap_score": overlap,
-                "note": note or "-"
+                "note": note
             }
             (results if accepted else rejected).append(item)
 
-        total_time = time.time()-t0
-
-        # ========== RESPONSE ==========
+        total_time = time.time() - t0
         if not results:
             return jsonify({
-                "status":"low_confidence",
-                "message":"Tidak ada hasil cukup relevan",
+                "status": "low_confidence",
+                "message": "Tidak ada hasil cukup relevan",
                 "ai_debug": relevance,
                 "debug_rejected": rejected,
-                "timing":{
-                    "ai_domain_sec":round(t_pre_time,3),
-                    "ai_relevance_sec":round(t_post_time,3),
-                    "embedding_sec":round(emb_time,3),
-                    "qdrant_sec":round(qd_time,3),
-                    "total_sec":round(total_time,3)
+                "timing": {
+                    "ai_domain_sec": round(t_pre_time, 3),
+                    "ai_relevance_sec": round(t_post_time, 3),
+                    "embedding_sec": round(emb_time, 3),
+                    "qdrant_sec": round(qd_time, 3),
+                    "total_sec": round(total_time, 3)
                 }
-            }),200
+            }), 200
 
         return jsonify({
-            "status":"success",
-            "data":{
+            "status": "success",
+            "data": {
                 "similar_questions": results,
-                "metadata":{
+                "metadata": {
                     "wa_number": wa,
                     "original_question": user_q,
                     "final_question": question,
                     "dense_score_top": results[0]["dense_score"],
                     "category": category["name"] if category else "Global",
-                    "ai_reason": relevance.get("reason","-"),
-                    "ai_reformulated": relevance.get("reformulated_question","-")
+                    "ai_reason": relevance.get("reason", "-"),
+                    "ai_reformulated": relevance.get("reformulated_question", "-")
                 }
             },
-            "timing":{
-                "ai_domain_sec":round(t_pre_time,3),
-                "ai_relevance_sec":round(t_post_time,3),
-                "embedding_sec":round(emb_time,3),
-                "qdrant_sec":round(qd_time,3),
-                "total_sec":round(total_time,3)
+            "timing": {
+                "ai_domain_sec": round(t_pre_time, 3),
+                "ai_relevance_sec": round(t_post_time, 3),
+                "embedding_sec": round(emb_time, 3),
+                "qdrant_sec": round(qd_time, 3),
+                "total_sec": round(total_time, 3)
             }
         })
 
     except Exception as e:
         logger.error(f"Error in search: {e}", exc_info=True)
-        return jsonify({"error":"Kesalahan internal","detail":str(e)}),500
-
+        return jsonify({"error": "Kesalahan internal", "detail": str(e)}), 500
 
 # ==========================================================
 # 🔹 ERROR RESPONSE
