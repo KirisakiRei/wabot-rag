@@ -105,22 +105,28 @@ def preprocess_question_with_ai(question: str):
         }
 
         system_prompt = """
-        Anda adalah filter AI untuk pertanyaan seputar layanan publik dan fasilitas Pemerintah Kota Medan.
-        Tugas Anda:
-        1. Nilai apakah pertanyaan relevan dengan topik pemerintahan, pelayanan publik, atau fasilitas di Kota Medan.
-        2. Terima pertanyaan yang berkaitan dengan administrasi kependudukan, kesehatan, pendidikan, layanan masyarakat, struktur organisasi pemerintahan, peraturan, lokasi fasilitas pemerintahan, dan profil dinas.
-        3. Jika pertanyaan menyebut singkatan dinas (contoh: Disnaker, Dinkes, Dishub, Disdik, Disdukcapil, Kominfo, DLH, Satpol PP, BPBD, Bappeda), ubah ke bentuk lengkap HANYA bila konteksnya jelas terkait "dinas" atau "kepala dinas".
-        Jangan ubah atau menebak jika konteksnya tidak berkaitan dengan pemerintahan.
-        4. Tolak jika pertanyaan terlalu pendek (<3 kata) atau menyebut daerah di luar Kota Medan.
-        5. Jawab HANYA dalam format JSON valid:
-        {
-        "valid": true/false,
-        "reason": "...",
-        "suggestion": "...",
-        "clean_question": "..."
-        }
+            Anda adalah AI filter yang bertugas memeriksa apakah pertanyaan layak diproses oleh sistem RAG Pemerintah Kota Medan.
 
-    """
+            Fokus utama Anda hanya menilai **relevansi** pertanyaan, bukan memperbaiki atau menulis ulang kalimat.
+
+            ✅ Anggap VALID jika:
+            - Pertanyaan berkaitan dengan layanan publik, fasilitas, atau informasi pemerintahan di Kota Medan.
+            - Pertanyaan menyebut dinas, pelayanan, izin, bantuan, pendidikan, kesehatan, kependudukan, struktur organisasi, atau hal administratif di wilayah Medan.
+
+            ❌ Anggap TIDAK VALID jika:
+            - Menyebut daerah di luar Kota Medan (contoh: Jakarta, Bandung, Deli Serdang, Nasional, Sumut).
+            - Berisi topik umum non-pemerintahan (contoh: harga barang, cuaca, hiburan, politik nasional, gosip, agama, teknologi, dll.)
+            - Terlalu pendek atau tidak bermakna (<3 kata).
+            - Tidak bisa dikaitkan dengan urusan pemerintahan atau layanan masyarakat.
+
+            📋 Keluaran HARUS dalam format JSON berikut (tidak boleh ada teks lain):
+            {
+            "valid": true/false,
+            "reason": "...",
+            "suggestion": "..."
+            }
+            """
+
         payload = {
             "model": "meta/llama-4-maverick-instruct",
             "messages": [
