@@ -11,15 +11,18 @@ import time
 
 app = Flask(__name__)
 
-
+# ==========================================================
+# 🔹 LOAD MODEL DAN CLIENT
+# ==========================================================
 model = SentenceTransformer("/home/kominfo/models/e5-small-local")
 qdrant = QdrantClient(host=CONFIG["qdrant"]["host"], port=CONFIG["qdrant"]["port"])
-
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-
+# ==========================================================
+# 🔹 UTILITY DAN SETUP
+# ==========================================================
 STOPWORDS = {
     "apa", "bagaimana", "cara", "untuk", "dan", "atau", "yang", "dengan",
     "di", "ke", "dari", "buat", "mengurus", "membuat", "mendaftar",
@@ -27,33 +30,15 @@ STOPWORDS = {
     "siapa", "kepala", "kota", "medan"
 }
 
-
 CATEGORY_KEYWORDS = {
-    "0196f6a8-9cb8-7385-8383-9d4f8fdcd396": [  # Kependudukan
-        "ktp", "kartu tanda penduduk", "kependudukan", "kk", "kartu keluarga", "akta", "kelahiran", "kematian", "domisili"
-    ],
-    "0196ccd1-d7f9-7252-b0a1-a67d4bc103a0": [  # Kesehatan
-        "bpjs", "kesehatan", "rsud", "puskesmas", "klinik", "imunisasi", "vaksin", "stunting", "obat", "berobat"
-    ],
-    "0196cd16-3a0a-726d-99b4-2e9c6dda5f64": [  # Pendidikan
-        "sekolah", "guru", "siswa", "ppdb", "beasiswa", "pendidikan", "kuliah", "universitas", "murid", "kip"
-    ],
-    "019707b1-ebb6-708f-ad4d-bfc65d05f299": [  # Layanan Masyarakat
-        "pengaduan", "izin", "pelayanan", "bantuan", "masyarakat", "surat","usaha"
-    ],
-    "0196f6b9-ba96-70f1-a930-3b89e763170f": [  # Struktur Organisasi
-        "kepala dinas", "kadis", "sekretaris", "jabatan", "struktur", "pimpinan"
-    ],
-    "01970829-1054-72b2-bb31-16a34edd84fc": [  # Peraturan
-        "aturan", "peraturan", "perwali", "perda", "pergub", "perpres", "permen", "hukum"
-    ],
-    "0196f6c0-1178-733a-acd8-b8cb62eefe98": [  # Lokasi Fasilitas Pemerintahan
-        "lokasi", "alamat", "kantor", "posisi"
-    ],
-     "001970853-dd2e-716e-b90c-c4f79270f700": [  # Profil
-        "tugas", "tupoksi", "peran", "fungsi", "profil", "visi", "misi"
-    ]
-    
+    "0196f6a8-9cb8-7385-8383-9d4f8fdcd396": ["ktp","kependudukan","kk","akta","kelahiran","kematian","domisili"],
+    "0196ccd1-d7f9-7252-b0a1-a67d4bc103a0": ["bpjs","kesehatan","rsud","puskesmas","klinik","vaksin","obat"],
+    "0196cd16-3a0a-726d-99b4-2e9c6dda5f64": ["sekolah","guru","siswa","ppdb","beasiswa","pendidikan"],
+    "019707b1-ebb6-708f-ad4d-bfc65d05f299": ["pengaduan","izin","pelayanan","bantuan","masyarakat","usaha"],
+    "0196f6b9-ba96-70f1-a930-3b89e763170f": ["kepala dinas","kadis","sekretaris","jabatan","struktur"],
+    "01970829-1054-72b2-bb31-16a34edd84fc": ["aturan","peraturan","perwali","perda","perpres","hukum"],
+    "0196f6c0-1178-733a-acd8-b8cb62eefe98": ["lokasi","alamat","kantor"],
+    "001970853-dd2e-716e-b90c-c4f79270f700": ["tugas","fungsi","profil","visi","misi"]
 }
 
 CATEGORY_NAMES = {
@@ -67,269 +52,176 @@ CATEGORY_NAMES = {
     "001970853-dd2e-716e-b90c-c4f79270f700": "Profil"
 }
 
-def detect_category(question: str):
-    q_lower = question.lower()
-    for cat_id, keywords in CATEGORY_KEYWORDS.items():
-        for kw in keywords:
-            if kw in q_lower:
-                return {"id": cat_id, "name": CATEGORY_NAMES.get(cat_id, "Unknown")}
+def detect_category(q):
+    ql = q.lower()
+    for cid, kws in CATEGORY_KEYWORDS.items():
+        if any(kw in ql for kw in kws):
+            return {"id": cid, "name": CATEGORY_NAMES[cid]}
     return None
 
-def normalize_text(text: str) -> str:
-    text = re.sub(r"[^\w\s]", " ", text)
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
+def normalize_text(t):
+    t = re.sub(r"[^\w\s]", " ", t)
+    return re.sub(r"\s+", " ", t).strip()
 
-def clean_location_terms(text: str) -> str:
-    """Hilangkan frasa seperti 'di medan' atau 'di kota medan'"""
-    text = re.sub(r"\bdi\s+kota\s+medan\b", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"\bdi\s+medan\b", "", text, flags=re.IGNORECASE)
-    return text.strip()
+def clean_location_terms(t):
+    t = re.sub(r"\bdi\s+kota\s+medan\b", "", t, flags=re.IGNORECASE)
+    t = re.sub(r"\bdi\s+medan\b", "", t, flags=re.IGNORECASE)
+    return t.strip()
 
-def tokenize_and_filter(text: str):
-    return [w.lower() for w in text.split() if w.lower() not in STOPWORDS and len(w) > 2]
+def tokenize_and_filter(t):
+    return [w.lower() for w in t.split() if w.lower() not in STOPWORDS and len(w) > 2]
 
-def keyword_overlap(query: str, candidate: str) -> float:
-    q_tokens = set(tokenize_and_filter(query))
-    c_tokens = set(tokenize_and_filter(candidate))
-    if not q_tokens or not c_tokens:
-        return 0.0
-    return len(q_tokens & c_tokens) / len(q_tokens | c_tokens)
+def keyword_overlap(a, b):
+    A, B = set(tokenize_and_filter(a)), set(tokenize_and_filter(b))
+    return len(A & B) / len(A | B) if A and B else 0.0
 
-def preprocess_question_with_ai(question: str):
+# ==========================================================
+# 🔹 AI RELEVANCE CHECK (Post Validation)
+# ==========================================================
+def check_relevance_ai(user_q, rag_q):
     try:
         url = "https://dekallm.cloudeka.ai/v1/chat/completions"
         headers = {
             "Authorization": "Bearer sk-6FaPtqd1W5aj0z_-AbsKBA",
             "Content-Type": "application/json"
         }
-
         system_prompt = """
-            Anda adalah AI filter yang bertugas memeriksa apakah pertanyaan layak diproses oleh sistem RAG Pemerintah Kota Medan.
-
-            Fokus utama Anda hanya menilai **relevansi** pertanyaan, bukan memperbaiki atau menulis ulang kalimat.
-
-            ✅ Anggap VALID jika:
-            - Pertanyaan berkaitan dengan layanan publik, fasilitas, atau informasi pemerintahan di Kota Medan.
-            - Pertanyaan menyebut dinas, pelayanan, izin, bantuan, pendidikan, kesehatan, kependudukan, struktur organisasi, atau hal administratif di wilayah Medan.
-
-            ❌ Anggap TIDAK VALID jika:
-            - Menyebut daerah di luar Kota Medan (contoh: Jakarta, Bandung, Deli Serdang, Nasional, Sumut).
-            - Berisi topik umum non-pemerintahan (contoh: harga barang, cuaca, hiburan, politik nasional, gosip, agama, teknologi, dll.)
-            - Terlalu pendek atau tidak bermakna (<3 kata).
-            - Tidak bisa dikaitkan dengan urusan pemerintahan atau layanan masyarakat.
-
-            📋 Keluaran HARUS dalam format JSON berikut (tidak boleh ada teks lain):
-            {
-            "valid": true/false,
-            "reason": "...",
-            "suggestion": "..."
-            }
-            """
-
+Anda bertugas memeriksa apakah hasil pencarian RAG sesuai dengan maksud pertanyaan pengguna.
+Balas hanya dalam JSON berikut:
+{
+ "relevant": true/false,
+ "reason": "...",
+ "reformulated_question": "..."
+}
+Kriteria:
+- relevan jika hasil menjawab inti pertanyaan.
+- jika berbeda konteks, terlalu umum, atau salah fokus, set relevant=false dan bantu ubah pertanyaan dengan versi lebih jelas.
+"""
+        user_prompt = f"User Question: {user_q}\nRAG Result: {rag_q}"
         payload = {
             "model": "meta/llama-4-maverick-instruct",
             "messages": [
                 {"role": "system", "content": system_prompt.strip()},
-                {"role": "user", "content": question.strip()}
+                {"role": "user", "content": user_prompt.strip()}
             ],
-            "temperature":  0.1,
-            "top_p": 0.4
+            "temperature": 0.1,
+            "top_p": 0.5
         }
-
         resp = requests.post(url, headers=headers, json=payload, timeout=20)
         resp.raise_for_status()
-        data = resp.json()
-        ai_reply = data["choices"][0]["message"]["content"].strip()
-        match = re.search(r"\{.*\}", ai_reply, re.DOTALL)
-
-        if not match:
-            return {"valid": True, "clean_question": question}
-
-        parsed = json.loads(match.group(0))
-        if parsed.get("valid") is False:
-            logger.info(f"[AI-FILTER] ❌ Ditolak: {parsed.get('reason')}")
-            return {"valid": False, "reason": parsed.get("reason"), "suggestion": parsed.get("suggestion")}
-        return {"valid": True, "clean_question": normalize_text(parsed.get("clean_question", question))}
-
+        content = resp.json()["choices"][0]["message"]["content"].strip()
+        match = re.search(r"\{.*\}", content, re.DOTALL)
+        if match:
+            return json.loads(match.group(0))
+        return {"relevant": True, "reason": "-", "reformulated_question": ""}
     except Exception as e:
-        logger.error(f"[AI-FILTER] Gagal koneksi API: {str(e)}", exc_info=True)
-        return {"valid": True, "clean_question": normalize_text(question)}
+        logger.error(f"[AI-Relevance] Error: {e}", exc_info=True)
+        return {"relevant": True, "reason": "AI check failed", "reformulated_question": ""}
 
-
+# ==========================================================
+# 🔹 SEARCH ENDPOINT
+# ==========================================================
 @app.route("/api/search", methods=["POST"])
 def search():
     try:
-        t0 = time.time()  # total timer
-        
+        t0 = time.time()
         data = request.json
         if not data or "question" not in data:
             return error_response("ValidationError", "Field 'question' wajib diisi", code=400)
+        user_q = data["question"].strip()
+        wa = data.get("wa_number", "unknown")
 
-        raw_question = data["question"].strip()
-        wa_number = data.get("wa_number", "unknown")
+        # --- normalize
+        question = normalize_text(clean_location_terms(user_q))
+        category = detect_category(question)
+        cat_id = category["id"] if category else None
 
-        # ========== AI FILTER + TIMER ==========
-        t_ai_start = time.time()
-        ai_filter = preprocess_question_with_ai(raw_question)
-        ai_time = time.time() - t_ai_start
+        # --- embedding
+        t_emb = time.time()
+        qvec = model.encode("query: " + question).tolist()
+        emb_time = time.time() - t_emb
 
-        # Ambil data debug dari AI
-        ai_debug = {
-            "ai_reason": ai_filter.get("reason", "-"),
-            "ai_suggestion": ai_filter.get("suggestion", "-"),
-            "ai_clean_question": ai_filter.get("clean_question", raw_question)
-        }
+        # --- qdrant
+        t_qd = time.time()
+        filt = None
+        if cat_id:
+            filt = models.Filter(must=[models.FieldCondition(key="category_id", match=models.MatchValue(value=cat_id))])
+        dense_hits = qdrant.search("knowledge_bank", query_vector=qvec, limit=5, query_filter=filt)
+        qd_time = time.time() - t_qd
 
-        # Jika AI filter menolak pertanyaan
-        if not ai_filter.get("valid", True):
-            return jsonify({
-                "status": "low_confidence",
-                "message": ai_filter.get("reason", "Pertanyaan tidak valid"),
-                "suggestion": ai_filter.get("suggestion", "Silakan ajukan pertanyaan yang lebih spesifik."),
-                "ai_debug": ai_debug,
-                "timing": {
-                    "ai_filter_sec": round(ai_time, 3),
-                    "embedding_sec": 0.0,
-                    "qdrant_sec": 0.0,
-                    "total_sec": round(time.time() - t0, 3)
-                }
-            }), 200
+        if not dense_hits:
+            return jsonify({"status":"low_confidence","message":"Tidak ada hasil ditemukan"}),200
 
-        # ========== NORMALISASI & KATEGORI ==========
-        question = normalize_text(ai_filter.get("clean_question", raw_question))
-        question = clean_location_terms(question)
-        category_data = detect_category(question)
-        category_id = category_data["id"] if category_data else None
+        # --- ambil kandidat teratas
+        top_hit = dense_hits[0]
+        top_q = top_hit.payload["question"]
+        dense_score = float(top_hit.score)
 
-        # ========== EMBEDDING TIMER ==========
-        t_embed = time.time()
-        query_vector = model.encode("query: " + question).tolist()
-        embedding_time = time.time() - t_embed
+        # --- relevance check pakai AI
+        t_ai = time.time()
+        relevance = check_relevance_ai(user_q, top_q)
+        ai_time = time.time() - t_ai
 
-        # ========== QDRANT SEARCH TIMER ==========
-        t_qdrant = time.time()
-        query_filter = None
-        if category_id:
-            query_filter = models.Filter(
-                must=[models.FieldCondition(
-                    key="category_id",
-                    match=models.MatchValue(value=category_id)
-                )]
-            )
+        # --- jika tidak relevan, reformulasi dan retry sekali
+        if not relevance.get("relevant", True):
+            new_q = relevance.get("reformulated_question", "")
+            if new_q:
+                logger.info(f"[RETRY] Reformulating: {new_q}")
+                new_vec = model.encode("query: " + new_q).tolist()
+                dense_hits = qdrant.search("knowledge_bank", query_vector=new_vec, limit=5, query_filter=filt)
+                if dense_hits:
+                    top_hit = dense_hits[0]
+                    top_q = top_hit.payload["question"]
+                    dense_score = float(top_hit.score)
+                    question = new_q
 
-        dense_hits = qdrant.search(
-            collection_name="knowledge_bank",
-            query_vector=query_vector,
-            limit=5,
-            query_filter=query_filter
-        )
-
-        keyword_hits, _ = qdrant.scroll(
-            collection_name="knowledge_bank",
-            scroll_filter=models.Filter(
-                must=[models.FieldCondition(
-                    key="question",
-                    match=models.MatchText(text=question)
-                )]
-            ),
-            limit=5
-        )
-        qdrant_time = time.time() - t_qdrant
-
-        # ========== GABUNG HASIL ==========
-        combined = {}
-        for i, h in enumerate(dense_hits):
-            score = 1 / (i + 1)
-            combined[str(h.id)] = {"hit": h, "score": combined.get(str(h.id), {}).get("score", 0) + score}
-        for i, h in enumerate(keyword_hits):
-            score = 1 / (i + 1)
-            if str(h.id) in combined:
-                combined[str(h.id)]["score"] += score
-            else:
-                combined[str(h.id)] = {"hit": h, "score": score}
-
-        sorted_hits = sorted(combined.values(), key=lambda x: x["score"], reverse=True)[:3]
-
-        results, rejected = [], []
-        for item in sorted_hits:
-            h = item["hit"]
-            dense_score = getattr(h, "score", 0.0)
+        # --- build result
+        result = []
+        for h in dense_hits[:3]:
             overlap = keyword_overlap(question, h.payload["question"])
+            result.append({
+                "question": h.payload["question"],
+                "answer_id": h.payload["answer_id"],
+                "category_id": h.payload.get("category_id"),
+                "dense_score": float(h.score),
+                "overlap_score": float(overlap)
+            })
 
-            accepted, note = False, None
-            if dense_score >= 0.90:
-                accepted, note = True, "auto_accepted_by_dense"
-            elif 0.80 <= dense_score < 0.90 and overlap > 0.2:
-                accepted, note = True, "accepted_by_overlap"
+        total_time = round(time.time()-t0,3)
 
-            if accepted:
-                results.append({
-                    "question": h.payload["question"],
-                    "answer_id": h.payload["answer_id"],
-                    "category_id": h.payload.get("category_id"),
-                    "dense_score": float(dense_score),
-                    "overlap_score": float(overlap),
-                    "note": note
-                })
-            else:
-                rejected.append({
-                    "question": h.payload["question"],
-                    "dense_score": float(dense_score),
-                    "overlap_score": float(overlap)
-                })
-
-        total_time = time.time() - t0
-
-        # ========== HANDLE LOW CONFIDENCE ==========
-        if not results:
-            return jsonify({
-                "status": "low_confidence",
-                "message": "Tidak ada hasil cukup relevan",
-                "ai_debug": ai_debug,  # 🔥 tampilkan hasil AI meski tidak relevan
-                "debug_rejected": rejected,
-                "timing": {
-                    "ai_filter_sec": round(ai_time, 3),
-                    "embedding_sec": round(embedding_time, 3),
-                    "qdrant_sec": round(qdrant_time, 3),
-                    "total_sec": round(total_time, 3)
-                }
-            }), 200
-
-        # ========== SUCCESS ==========
         return jsonify({
             "status": "success",
             "data": {
-                "similar_questions": results,
+                "similar_questions": result,
                 "metadata": {
-                    "total_found": len(results),
-                    "wa_number": wa_number,
-                    "original_question": raw_question,
-                    "normalized_question": question,
-                    "ai_clean_question": ai_filter.get("clean_question", "(tidak ada perubahan)"),
-                    "detected_category": category_data["name"] if category_data else "Global"
+                    "wa_number": wa,
+                    "original_question": user_q,
+                    "final_question": question,
+                    "dense_score_top": dense_score,
+                    "ai_reason": relevance.get("reason", "-"),
+                    "ai_reformulated": relevance.get("reformulated_question", "-"),
+                    "category": category["name"] if category else "Global"
                 }
             },
-            "ai_debug": ai_debug,  # 🔥 tampilkan debug juga saat sukses
             "timing": {
-                "ai_filter_sec": round(ai_time, 3),
-                "embedding_sec": round(embedding_time, 3),
-                "qdrant_sec": round(qdrant_time, 3),
-                "total_sec": round(total_time, 3)
+                "ai_sec": round(ai_time,3),
+                "embedding_sec": round(emb_time,3),
+                "qdrant_sec": round(qd_time,3),
+                "total_sec": total_time
             }
         })
 
     except Exception as e:
-        logger.error(f"Error in search: {str(e)}", exc_info=True)
-        return error_response("ServerError", "Kesalahan internal", detail=str(e))
+        logger.error(f"Error in search: {e}", exc_info=True)
+        return error_response("ServerError","Kesalahan internal",detail=str(e))
 
-
-def error_response(error_type, message, detail=None, code=500):
-    payload = {"status": "error", "error": {"type": error_type, "message": message}}
-    if detail:
-        payload["error"]["detail"] = detail
-    return jsonify(payload), code
-
+# ==========================================================
+# 🔹 ERROR RESPONSE
+# ==========================================================
+def error_response(t, msg, detail=None, code=500):
+    payload = {"status":"error","error":{"type":t,"message":msg}}
+    if detail: payload["error"]["detail"]=detail
+    return jsonify(payload),code
 
 # API SYNC
 @app.route("/api/sync", methods=["POST"])
