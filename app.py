@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 # ==========================================================
 STOPWORDS = {
     "apa","bagaimana","cara","untuk","dan","atau","yang","dengan","di","ke","dari",
-    "buat","mengurus","membuat","mendaftar","dimana","kapan","berapa","adalah","itu",
+    "buat","mengurus","membuat","mendaftar","mencetak","dimana","kapan","berapa","adalah","itu",
     "ini","saya","kamu","siapa","kepala","kota","medan"
 }
 
@@ -29,7 +29,7 @@ CATEGORY_KEYWORDS = {
     "0196f6a8-9cb8-7385-8383-9d4f8fdcd396": ["ktp","kk","kartu keluarga","kartu tanda penduduk","akta","kelahiran","kematian","domisili","SKTM","NIK"],
     "0196ccd1-d7f9-7252-b0a1-a67d4bc103a0": ["bpjs","rsud","puskesmas","klinik","vaksin","pengobatan","berobat","posyandu","stunting","imunisasi"],
     "0196cd16-3a0a-726d-99b4-2e9c6dda5f64": ["sekolah","PPDB","SPMB","guru","siswa","ppdb","beasiswa","pendidikan","prestasi","zonasi","afirmasi"],
-    "019707b1-ebb6-708f-ad4d-bfc65d05f299": ["pengaduan","izin","pelayanan","bantuan","masyarakat","usaha"],
+    "019707b1-ebb6-708f-ad4d-bfc65d05f299": ["pengaduan","izin","siup","bantuan","masyarakat","usaha"],
     "0196f6b9-ba96-70f1-a930-3b89e763170f": ["kepala dinas","kadis","sekretaris","jabatan","struktur organisasi"],
     "01970829-1054-72b2-bb31-16a34edd84fc": ["aturan","peraturan","perwali","perda","perpres","hukum"],
     "0196f6c0-1178-733a-acd8-b8cb62eefe98": ["lokasi","alamat","kantor","posisi"],
@@ -156,13 +156,39 @@ def ai_filter_pre(question):
         url = "https://dekallm.cloudeka.ai/v1/chat/completions"
         headers = {"Authorization": "Bearer sk-6FaPtqd1W5aj0z_-AbsKBA", "Content-Type": "application/json"}
         system_prompt = """
-Anda adalah filter AI untuk pertanyaan seputar Pemerintah Kota Medan.
-Balas hanya JSON:
-{"valid": true/false, "reason": "...", "clean_question": "..."}
+Anda adalah AI filter untuk pertanyaan terkait Pemerintah Kota Medan.
 
-Valid jika: membahas dinas, layanan publik, izin, fasilitas umum, atau kebijakan Pemko Medan.
-Tidak valid jika: menyebut daerah lain, selebriti, topik pribadi, atau tidak terkait pemerintahan.
+Petunjuk:
+1. Balas HANYA dalam format JSON berikut:
+   {"valid": true/false, "reason": "<penjelasan>", "clean_question": "<pertanyaan yang sudah dibersihkan>"}
+
+2. Mark valid jika dan hanya jika pertanyaan membahas:
+   - Dinas/instansi di bawah Pemko Medan
+   - Layanan publik di Medan (KTP, SIM, pajak daerah, fasilitas kesehatan, pendidikan, dll)
+   - Izin usaha/lingkungan/keramaian yang dikeluarkan Pemko Medan
+   - Fasilitas umum milik Pemko Medan (taman, jalan, RSUD, dll)
+   - Kebijakan atau program Pemerintah Kota Medan
+
+3. Mark tidak valid jika:
+   - Membahas daerah di luar Medan
+   - Membahas figur publik non-pemerintah (selebriti, influencer, dll)
+   - Membahas topik pribadi, gosip, atau hal yang tidak berkaitan pemerintahan
+   - Pertanyaan tidak jelas, ambigu, atau tidak relevan dengan Pemko Medan
+
+4. Bersihkan pertanyaan di clean_question:
+   - Hilangkan emoji, tanda baca berlebihan, kata tidak relevan, atau typo
+   - Pastikan tetap dalam Bahasa Indonesia
+
+5. Jika valid, isi reason dengan "Pertanyaan relevan dengan Pemko Medan".
+   Jika tidak valid, isi reason dengan penjelasan singkat alasan penolakan.
+
+CONTOH OUTPUT:
+{"valid": true, "reason": "Pertanyaan relevan dengan Pemko Medan", "clean_question": "Bagaimana cara mengurus KTP di Medan?"}
+{"valid": false, "reason": "Topik membahas daerah lain (Jakarta)", "clean_question": "Bagaimana cara mengurus KTP di Jakarta?"}
+
+JANGAN BERIKAN PENJELASAN DI LUAR JSON.
 """
+
         payload = {
             "model": "meta/llama-4-maverick-instruct",
             "messages": [
