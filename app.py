@@ -17,18 +17,32 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ==========================================================
-# 🔹 STOPWORDS DAN KATEGORI
+# 🔹 STOPWORDS, SYNONYMS, DAN KATEGORI
 # ==========================================================
 STOPWORDS = {
-    "apa","bagaimana","cara","untuk","dan","atau","yang","dengan","di","ke","dari",
-    "buat","mengurus","membuat","mendaftar","mencetak","dimana","kapan","berapa","adalah","itu",
-    "ini","saya","kamu","siapa","kepala","kota","medan"
+    "apa","bagaimana","cara","untuk","dan","atau","yang","dengan","ke","dari","buat",
+    "membuat","mengurus","mendaftar","mencetak","dimana","kapan","berapa","adalah",
+    "itu","ini","saya","kamu"
+}
+
+SYNONYMS = {
+    "ktp": ["kartu tanda penduduk"],
+    "kk": ["kartu keluarga"],
+    "kadis": ["kepala dinas"],
+    "kominfo": ["dinas komunikasi dan informatika", "diskominfo"],
+    "dukcapil": ["dinas kependudukan dan catatan sipil", "disdukcapil"],
+    "dishub": ["dinas perhubungan"],
+    "dinkes": ["dinas kesehatan"],
+    "disnaker": ["dinas ketenagakerjaan"],
+    "sktm": ["surat keterangan tidak mampu"],
+    "siup": ["surat izin usaha perdagangan"],
+    "umkm": ["usaha mikro kecil menengah"]
 }
 
 CATEGORY_KEYWORDS = {
     "0196f6a8-9cb8-7385-8383-9d4f8fdcd396": ["ktp","kk","kartu keluarga","kartu tanda penduduk","akta","kelahiran","kematian","domisili","SKTM","NIK"],
     "0196ccd1-d7f9-7252-b0a1-a67d4bc103a0": ["bpjs","rsud","puskesmas","klinik","vaksin","pengobatan","berobat","posyandu","stunting","imunisasi"],
-    "0196cd16-3a0a-726d-99b4-2e9c6dda5f64": ["sekolah","PPDB","SPMB","guru","siswa","ppdb","beasiswa","pendidikan","prestasi","zonasi","afirmasi"],
+    "0196cd16-3a0a-726d-99b4-2e9c6dda5f64": ["sekolah","PPDB","SPMB","guru","siswa","beasiswa","pendidikan","prestasi","zonasi","afirmasi"],
     "019707b1-ebb6-708f-ad4d-bfc65d05f299": ["pengaduan","izin","siup","bantuan","masyarakat","usaha"],
     "0196f6b9-ba96-70f1-a930-3b89e763170f": ["kepala dinas","kadis","sekretaris","jabatan","struktur organisasi"],
     "01970829-1054-72b2-bb31-16a34edd84fc": ["aturan","peraturan","perwali","perda","perpres","hukum"],
@@ -45,8 +59,6 @@ CATEGORY_NAMES = {
     "0196f6c0-1178-733a-acd8-b8cb62eefe98": "Lokasi Fasilitas Pemerintahan Kota Medan",
     "001970853-dd2e-716e-b90c-c4f79270f700": "Profil"
 }
-
-# Auto kumpulkan semua keyword dari kategori
 ALL_KEYWORDS = set(sum(CATEGORY_KEYWORDS.values(), []))
 
 # ==========================================================
@@ -68,14 +80,24 @@ def clean_location_terms(t):
     t = re.sub(r"\bdi\s+medan\b", "", t, flags=re.IGNORECASE)
     return t.strip()
 
+def expand_terms(text):
+    """Perluas sinonim sebelum overlap"""
+    words = text.lower().split()
+    expanded = []
+    for w in words:
+        expanded.append(w)
+        if w in SYNONYMS:
+            expanded.extend(SYNONYMS[w])
+    return " ".join(expanded)
+
 def tokenize_and_filter(t):
     return [w.lower() for w in t.split() if w.lower() not in STOPWORDS and len(w) > 2]
 
 def keyword_overlap(a, b):
-    A, B = set(tokenize_and_filter(a)), set(tokenize_and_filter(b))
-    if not A or not B:
-        return 0.0
-    return len(A & B) / len(A | B)
+    a_exp = expand_terms(a)
+    b_exp = expand_terms(b)
+    A, B = set(tokenize_and_filter(a_exp)), set(tokenize_and_filter(b_exp))
+    return len(A & B) / len(A | B) if A and B else 0.0
 
 def shorten_question(text):
     if not text:
@@ -91,61 +113,15 @@ def shorten_question(text):
     return text.strip()
 
 # ==========================================================
-# 🔹 DETEKSI PERTANYAAN SPESIFIK (HYBRID RULE + AI)
+# 🔹 DETEKSI PERTANYAAN SPESIFIK
 # ==========================================================
-def ai_is_specific(q):
-    """AI fallback untuk pertanyaan ambigu"""
-    try:
-        url = "https://dekallm.cloudeka.ai/v1/chat/completions"
-        headers = {"Authorization": "Bearer sk-6FaPtqd1W5aj0z_-AbsKBA", "Content-Type": "application/json"}
-        sys_prompt = """
-Anda membantu sistem mendeteksi apakah pertanyaan sudah spesifik atau masih umum.
-Balas hanya JSON:
-{"specific": true/false, "reason": "..."}
-
-Kriteria:
-- Specific jika pertanyaan sudah punya objek dan maksud yang jelas (misal: urus KTP, daftar sekolah, siapa kepala dinas).
-- Not specific jika hanya menyebut topik umum (misal: KTP, izin, sekolah, Medan).
-"""
-        payload = {
-            "model": "meta/llama-4-maverick-instruct",
-            "messages": [
-                {"role": "system", "content": sys_prompt.strip()},
-                {"role": "user", "content": q.strip()}
-            ],
-            "temperature": 0.0,
-            "top_p": 0.5
-        }
-        resp = requests.post(url, headers=headers, json=payload, timeout=10)
-        content = resp.json()["choices"][0]["message"]["content"]
-        match = re.search(r"\{.*\}", content, re.DOTALL)
-        if match:
-            data = json.loads(match.group(0))
-            return data.get("specific", False)
-        return False
-    except Exception as e:
-        logger.error(f"[AI-SpecificCheck] {e}")
-        return False
-
 def is_specific_question(q):
     q = q.lower().strip()
-
-    # 1️⃣ kata tanya + cukup panjang
     if re.search(r"\b(apa|siapa|bagaimana|dimana|kapan)\b", q) and len(q.split()) > 3:
         return True
-
-    # 2️⃣ kata kerja + entitas publik (auto dari ALL_KEYWORDS)
     if re.search(r"(urus|buat|daftar|ambil|cek|lapor|perpanjang|bikin|cetak)", q):
         if any(kw.lower() in q for kw in ALL_KEYWORDS):
             return True
-
-    # 3️⃣ fallback AI untuk pertanyaan pendek atau ambigu
-    if len(q.split()) <= 3:
-        ai_check = ai_is_specific(q)
-        if ai_check:
-            logger.info("[PRE] AI fallback menilai pertanyaan spesifik.")
-            return True
-
     return False
 
 # ==========================================================
@@ -158,37 +134,20 @@ def ai_filter_pre(question):
         system_prompt = """
 Anda adalah AI filter untuk pertanyaan terkait Pemerintah Kota Medan.
 
-Petunjuk:
-1. Balas HANYA dalam format JSON berikut:
-   {"valid": true/false, "reason": "<penjelasan>", "clean_question": "<pertanyaan yang sudah dibersihkan>"}
+1️⃣ Balas HANYA dalam JSON:
+{"valid": true/false, "reason": "...", "clean_question": "..."}
 
-2. Mark valid jika dan hanya jika pertanyaan membahas:
-   - Dinas/instansi di bawah Pemko Medan
-   - Layanan publik di Medan (KTP, SIM, pajak daerah, fasilitas kesehatan, pendidikan, dll)
-   - Izin usaha/lingkungan/keramaian yang dikeluarkan Pemko Medan
-   - Fasilitas umum milik Pemko Medan (taman, jalan, RSUD, dll)
-   - Kebijakan atau program Pemerintah Kota Medan
+2️⃣ VALID jika menyebut dinas, layanan publik, izin, fasilitas umum, atau kebijakan Pemko Medan — 
+   meskipun tidak menyebut kata 'Medan'.
 
-3. Mark tidak valid jika:
-   - Membahas daerah di luar Medan
-   - Membahas figur publik non-pemerintah (selebriti, influencer, dll)
-   - Membahas topik pribadi, gosip, atau hal yang tidak berkaitan pemerintahan
-   - Pertanyaan tidak jelas, ambigu, atau tidak relevan dengan Pemko Medan
+3️⃣ INVALID hanya jika:
+   - Menyebut daerah lain (Jakarta, Bandung, dll)
+   - Topik non-layanan publik (gosip, selebriti, hiburan)
+   - Pertanyaan terlalu pendek atau tidak jelas
 
-4. Bersihkan pertanyaan di clean_question:
-   - Hilangkan emoji, tanda baca berlebihan, kata tidak relevan, atau typo
-   - Pastikan tetap dalam Bahasa Indonesia
-
-5. Jika valid, isi reason dengan "Pertanyaan relevan dengan Pemko Medan".
-   Jika tidak valid, isi reason dengan penjelasan singkat alasan penolakan.
-
-CONTOH OUTPUT:
-{"valid": true, "reason": "Pertanyaan relevan dengan Pemko Medan", "clean_question": "Bagaimana cara mengurus KTP di Medan?"}
-{"valid": false, "reason": "Topik membahas daerah lain (Jakarta)", "clean_question": "Bagaimana cara mengurus KTP di Jakarta?"}
-
-JANGAN BERIKAN PENJELASAN DI LUAR JSON.
+4️⃣ Jangan ubah pertanyaan yang sudah spesifik dan relevan.
+Bersihkan ejaan & tanda baca saja.
 """
-
         payload = {
             "model": "meta/llama-4-maverick-instruct",
             "messages": [
@@ -218,9 +177,12 @@ Tugas Anda mengevaluasi apakah hasil pencarian RAG sesuai dengan maksud pertanya
 Balas hanya JSON:
 {"relevant": true/false, "reason": "...", "reformulated_question": "..."}
 
-- Jika hasil sudah menjawab inti pertanyaan, tulis relevant:true.
-- Jika tidak, ubah pertanyaan jadi bentuk tanya singkat (apa, siapa, dimana, bagaimana, kapan).
-- Maksimal 15 kata, jangan tambah konteks baru.
+Kriteria:
+- Anggap relevan jika hasil membahas topik/layanan publik yang sama 
+  (contoh: KTP = Kartu Tanda Penduduk, KK = Kartu Keluarga, Diskominfo = Kominfo).
+- Relevan juga jika berbeda detail kecil (hilang, rusak, baru).
+- Jika tidak relevan, ubah pertanyaan jadi bentuk tanya singkat (apa, siapa, dimana, bagaimana, kapan).
+- Maksimal 15 kata, dan pertanyaan baru hanya boleh berisi kata dari pertanyaan asli + hasil RAG.
 """
         user_prompt = f"User: {user_q}\nRAG Result: {rag_q}"
         payload = {
@@ -245,7 +207,7 @@ Balas hanya JSON:
         return {"relevant": True, "reason": "AI check failed", "reformulated_question": ""}
 
 # ==========================================================
-# 🔹 MAIN SEARCH
+# 🔹 MAIN SEARCH PIPELINE
 # ==========================================================
 @app.route("/api/search", methods=["POST"])
 def search():
@@ -258,7 +220,7 @@ def search():
         user_q = data["question"].strip()
         wa = data.get("wa_number", "unknown")
 
-        # --- DETEKSI SPESIFIK SEBELUM FILTER AI
+        # --- PRE FILTER
         t_pre = time.time()
         if is_specific_question(user_q):
             logger.info("[PRE] Pertanyaan spesifik - skip AI filter")
@@ -284,25 +246,29 @@ def search():
         qvec = model.encode("query: " + question).tolist()
         emb_time = time.time() - t_emb
 
-        # --- QDRANT
+        # --- QDRANT SEARCH + FALLBACK TANPA FILTER
         t_qd = time.time()
         filt = models.Filter(must=[models.FieldCondition(key="category_id",
-                match=models.MatchValue(value=cat_id))]) if cat_id else None
+            match=models.MatchValue(value=cat_id))]) if cat_id else None
         dense_hits = qdrant.search("knowledge_bank", query_vector=qvec, limit=5, query_filter=filt)
+        if len(dense_hits) < 3:
+            dense_hits = qdrant.search("knowledge_bank", query_vector=qvec, limit=5)
         qd_time = time.time() - t_qd
+
         if not dense_hits:
             return jsonify({"status": "low_confidence", "message": "Tidak ada hasil ditemukan"}), 200
 
-        # --- POST CHECK (AI RELEVANCE)
+        # --- POST CHECK
         t_post = time.time()
         relevance = ai_check_relevance(user_q, dense_hits[0].payload["question"])
         t_post_time = time.time() - t_post
+
         if not relevance.get("relevant", True):
             new_q = relevance.get("reformulated_question", "")
             if new_q:
                 logger.info(f"[RETRY] Reformulating: {new_q}")
                 qvec = model.encode("query: " + new_q).tolist()
-                dense_hits = qdrant.search("knowledge_bank", query_vector=qvec, limit=5, query_filter=filt)
+                dense_hits = qdrant.search("knowledge_bank", query_vector=qvec, limit=5)
                 question = new_q
 
         # --- SCORING
@@ -310,12 +276,10 @@ def search():
         for h in dense_hits[:5]:
             dense = float(h.score)
             overlap = keyword_overlap(question, h.payload["question"])
-            note = "-"
-            accepted = False
-
-            if dense >= 0.90:
+            note, accepted = "-", False
+            if dense >= 0.88:
                 accepted, note = True, "auto_accepted_by_dense"
-            elif 0.80 <= dense < 0.90 and overlap > 0.2:
+            elif 0.82 <= dense < 0.88 and overlap >= 0.25:
                 accepted, note = True, "accepted_by_overlap"
 
             item = {
@@ -326,7 +290,6 @@ def search():
                 "overlap_score": overlap,
                 "note": note
             }
-
             (results if accepted else rejected).append(item)
 
         total_time = time.time() - t0
@@ -371,6 +334,7 @@ def search():
     except Exception as e:
         logger.error(f"Error in search: {e}", exc_info=True)
         return jsonify({"error": "Kesalahan internal", "detail": str(e)}), 500
+
 
 # ==========================================================
 # 🔹 ERROR RESPONSE
