@@ -213,14 +213,21 @@ Kriteria:
 def search():
     try:
         t0 = time.time()
-        data = request.json
-        if not data or "question" not in data:
-            return jsonify({"error": "Field 'question' wajib diisi"}), 400
-
-        user_q = data["question"].strip()
+        data = request.json or {}
+        user_q = data.get("question", "").strip()
         wa = data.get("wa_number", "unknown")
 
-        # --- PRE FILTER
+        if not user_q:
+            return jsonify({
+                "status": "error",
+                "message": "Field 'question' wajib diisi",
+                "data": {"similar_questions": [], "metadata": {}},
+                "timing": {}
+            }), 400
+
+        # ==========================================================
+        # 🔹 PRE-FILTER (AI FILTER / SPECIFICITY CHECK)
+        # ==========================================================
         t_pre = time.time()
         if is_specific_question(user_q):
             logger.info("[PRE] Pertanyaan spesifik - skip AI filter")
@@ -229,41 +236,60 @@ def search():
             pre = ai_filter_pre(user_q)
         t_pre_time = time.time() - t_pre
 
+        # Jika pertanyaan tidak valid
         if not pre.get("valid", True):
             return jsonify({
                 "status": "low_confidence",
                 "message": pre.get("reason", "Pertanyaan tidak relevan"),
-                "ai_debug": pre,
+                "data": {
+                    "similar_questions": [],
+                    "metadata": {
+                        "wa_number": wa,
+                        "original_question": user_q,
+                        "final_question": "-",
+                        "category": "-",
+                        "ai_reason": pre.get("reason", "-"),
+                        "ai_reformulated": "-"
+                    }
+                },
                 "timing": {"ai_domain_sec": round(t_pre_time, 3)}
             }), 200
 
+        # ==========================================================
+        # 🔹 EMBEDDING & CATEGORY DETECTION
+        # ==========================================================
         question = normalize_text(clean_location_terms(pre.get("clean_question", user_q)))
         category = detect_category(question)
         cat_id = category["id"] if category else None
 
-        # --- EMBEDDING
         t_emb = time.time()
         qvec = model.encode("query: " + question).tolist()
         emb_time = time.time() - t_emb
 
-        # --- QDRANT SEARCH + FALLBACK TANPA FILTER
+        # ==========================================================
+        # 🔹 QDRANT SEARCH (DENGAN FALLBACK)
+        # ==========================================================
         t_qd = time.time()
         filt = models.Filter(must=[models.FieldCondition(key="category_id",
-            match=models.MatchValue(value=cat_id))]) if cat_id else None
+                match=models.MatchValue(value=cat_id))]) if cat_id else None
         dense_hits = qdrant.search("knowledge_bank", query_vector=qvec, limit=5, query_filter=filt)
         if len(dense_hits) < 3:
             dense_hits = qdrant.search("knowledge_bank", query_vector=qvec, limit=5)
         qd_time = time.time() - t_qd
 
         if not dense_hits:
-            return jsonify({"status": "low_confidence", "message": "Tidak ada hasil ditemukan"}), 200
+            dense_hits = []
 
-        # --- POST CHECK
+        # ==========================================================
+        # 🔹 AI RELEVANCE CHECK
+        # ==========================================================
         t_post = time.time()
-        relevance = ai_check_relevance(user_q, dense_hits[0].payload["question"])
+        relevance = {}
+        if dense_hits:
+            relevance = ai_check_relevance(user_q, dense_hits[0].payload["question"])
         t_post_time = time.time() - t_post
 
-        if not relevance.get("relevant", True):
+        if relevance and not relevance.get("relevant", True):
             new_q = relevance.get("reformulated_question", "")
             if new_q:
                 logger.info(f"[RETRY] Reformulating: {new_q}")
@@ -271,12 +297,15 @@ def search():
                 dense_hits = qdrant.search("knowledge_bank", query_vector=qvec, limit=5)
                 question = new_q
 
-        # --- SCORING
+        # ==========================================================
+        # 🔹 SCORING DAN FILTER HASIL
+        # ==========================================================
         results, rejected = [], []
         for h in dense_hits[:5]:
             dense = float(h.score)
             overlap = keyword_overlap(question, h.payload["question"])
             note, accepted = "-", False
+
             if dense >= 0.88:
                 accepted, note = True, "auto_accepted_by_dense"
             elif 0.82 <= dense < 0.88 and overlap >= 0.25:
@@ -293,33 +322,23 @@ def search():
             (results if accepted else rejected).append(item)
 
         total_time = time.time() - t0
-        if not results:
-            return jsonify({
-                "status": "low_confidence",
-                "message": "Tidak ada hasil cukup relevan",
-                "ai_debug": relevance,
-                "debug_rejected": rejected,
-                "timing": {
-                    "ai_domain_sec": round(t_pre_time, 3),
-                    "ai_relevance_sec": round(t_post_time, 3),
-                    "embedding_sec": round(emb_time, 3),
-                    "qdrant_sec": round(qd_time, 3),
-                    "total_sec": round(total_time, 3)
-                }
-            }), 200
 
-        return jsonify({
-            "status": "success",
+        # ==========================================================
+        # 🔹 FORMAT RESPON KONSISTEN
+        # ==========================================================
+        response_data = {
+            "status": "success" if results else "low_confidence",
+            "message": "Hasil ditemukan" if results else "Tidak ada hasil cukup relevan",
             "data": {
-                "similar_questions": results,
+                "similar_questions": results if results else rejected,
                 "metadata": {
                     "wa_number": wa,
                     "original_question": user_q,
-                    "final_question": question,
-                    "dense_score_top": results[0]["dense_score"],
+                    "final_question": question if results else "-",
+                    "dense_score_top": results[0]["dense_score"] if results else "-",
                     "category": category["name"] if category else "Global",
-                    "ai_reason": relevance.get("reason", "-"),
-                    "ai_reformulated": relevance.get("reformulated_question", "-")
+                    "ai_reason": relevance.get("reason", "-") if relevance else "-",
+                    "ai_reformulated": relevance.get("reformulated_question", "-") if relevance else "-"
                 }
             },
             "timing": {
@@ -329,12 +348,19 @@ def search():
                 "qdrant_sec": round(qd_time, 3),
                 "total_sec": round(total_time, 3)
             }
-        })
+        }
+
+        return jsonify(response_data), 200
 
     except Exception as e:
         logger.error(f"Error in search: {e}", exc_info=True)
-        return jsonify({"error": "Kesalahan internal", "detail": str(e)}), 500
-
+        return jsonify({
+            "status": "error",
+            "message": "Kesalahan internal",
+            "data": {"similar_questions": [], "metadata": {}},
+            "timing": {},
+            "detail": str(e)
+        }), 500
 
 # ==========================================================
 # 🔹 ERROR RESPONSE
