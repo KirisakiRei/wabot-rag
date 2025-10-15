@@ -39,40 +39,41 @@ def print_candidates(results):
     print("-" * 70)
     for i, r in enumerate(results, start=1):
         print(f"[{i}] {r['question']}")
-        print(f"    Dense: {r['dense_score']:.3f} | Overlap: {r['overlap_score']:.3f} | Note: {r['note']}")
+        print(f"    Dense: {r['dense_score']:.3f} | Overlap: {r['overlap_score']:.3f} | Final: {r['final_score']:.3f} | Note: {r['note']}")
     print("-" * 70)
 
 # ==========================================================
-# 🔹 Fungsi Logging ke Excel (Tanpa Pandas)
+# 🔹 Logging ke Excel (Tanpa Pandas)
 # ==========================================================
 def log_to_excel(entry):
-    """
-    Menyimpan setiap hasil pipeline ke file Excel chatbot_log.xlsx tanpa pandas
-    """
     columns = [
-        "Timestamp", "Status", "Original Question", "Final Question", "Category",
-        "Dense Top", "AI Reason", "AI Reformulated",
+        "Timestamp", "Status", "Original Question", "Final Question",
+        "Question Sent to RAG", "AI Reformulated Question",
+        "Category", "Dense Top", "Final Score Top",
+        "AI Reason", "AI Reformulated",
         "Total Candidates", "Accepted", "Rejected",
-        "AI Filter (s)", "AI Relevance (s)", "Embedding (s)", "Qdrant (s)", "Total Time (s)"
+        "AI Filter (s)", "AI Relevance (s)", "Embedding (s)",
+        "Qdrant (s)", "Total Time (s)", "Total Processing Time (s)"
     ]
 
-    # Jika file belum ada → buat baru
     if not os.path.exists(LOG_FILE):
         wb = Workbook()
         ws = wb.active
         ws.append(columns)
         wb.save(LOG_FILE)
 
-    # Buka workbook dan tambahkan baris baru
     wb = load_workbook(LOG_FILE)
     ws = wb.active
-    row_data = [
+    ws.append([
         entry.get("Timestamp", ""),
         entry.get("Status", ""),
         entry.get("Original Question", ""),
         entry.get("Final Question", ""),
+        entry.get("Question Sent to RAG", ""),
+        entry.get("AI Reformulated Question", ""),
         entry.get("Category", ""),
         entry.get("Dense Top", ""),
+        entry.get("Final Score Top", ""),
         entry.get("AI Reason", ""),
         entry.get("AI Reformulated", ""),
         entry.get("Total Candidates", ""),
@@ -82,9 +83,9 @@ def log_to_excel(entry):
         entry.get("AI Relevance (s)", ""),
         entry.get("Embedding (s)", ""),
         entry.get("Qdrant (s)", ""),
-        entry.get("Total Time (s)", "")
-    ]
-    ws.append(row_data)
+        entry.get("Total Time (s)", ""),
+        entry.get("Total Processing Time (s)", "")
+    ])
     wb.save(LOG_FILE)
 
 # ==========================================================
@@ -101,11 +102,11 @@ def main():
 
         payload = {"question": question}
         try:
-            t0 = time.time()
+            t_start = time.time()
             response = requests.post(API_URL, json=payload, timeout=120)
-            elapsed = round(time.time() - t0, 2)
+            total_elapsed = round(time.time() - t_start, 2)
 
-            print_header(f"FULL PIPELINE TRACE ({elapsed}s)")
+            print_header(f"FULL PIPELINE TRACE ({total_elapsed}s)")
             print_step("📥 Input Pertanyaan", question)
 
             if response.status_code != 200:
@@ -116,80 +117,59 @@ def main():
             data = response.json()
             status = data.get("status", "").upper()
             timing = data.get("timing", {})
+            meta = data.get("data", {}).get("metadata", {})
 
-            # 1️⃣ PRE-PROCESSING
-            print_step("🔍 PRE-PROCESSING (AI Filter / Specificity Check)")
-            if status == "LOW_CONFIDENCE" and "ai_debug" in data:
-                pre = data["ai_debug"]
-                print(f"Valid        : {pre.get('valid', '-')}")
-                print(f"Reason       : {pre.get('reason', '-')}")
-                print(f"Clean Q      : {pre.get('clean_question', '-')}")
-            else:
-                print(f"AI Filter Time : {timing.get('ai_domain_sec', '-')}s (otomatis)")
+            # 1️⃣ PRE-FILTER
+            print_step("🔍 PRE-PROCESSING (AI Filter / Hard Filter)")
+            print(f"AI Filter Time : {timing.get('ai_domain_sec', '-')}s")
 
             # 2️⃣ EMBEDDING
             print_step("🧠 EMBEDDING VECTOR")
-            print("Embedding dilakukan dengan model e5-small-local (dalam API Flask)\n-> hasil vektor tidak ditampilkan untuk efisiensi.")
+            print("Embedding dilakukan dengan model e5-small-local (Flask API)\n-> hasil vektor tidak ditampilkan demi efisiensi.")
 
-            # 3️⃣ QDRANT RETRIEVAL
+            # 3️⃣ QDRANT
             print_step("🗃️  QDRANT SEARCH")
             print(f"Qdrant Search Time : {timing.get('qdrant_sec', '-')}")
             if status == "SUCCESS":
-                meta = data["data"]["metadata"]
                 print(f"Category Detected  : {meta.get('category', '-')}")
                 print(f"Top Dense Score    : {meta.get('dense_score_top', '-')}")
-            elif "debug_rejected" in data:
+                print(f"Top Final Score    : {meta.get('final_score_top', '-')}")
+            else:
                 print("Qdrant hasil ditemukan namun tidak cukup relevan.")
 
-            # 4️⃣ POST-PROCESSING
+            # 4️⃣ AI RELEVANCE
             print_step("🤖 POST-PROCESSING (AI Relevance Check)")
-            ai_reason = "-"
-            ai_reform = "-"
-            if status == "SUCCESS":
-                meta = data["data"]["metadata"]
-                ai_reason = meta.get("ai_reason", "-")
-                ai_reform = meta.get("ai_reformulated", "-")
-                print(f"AI Reason       : {ai_reason}")
-                print(f"Reformulated Q  : {ai_reform}")
-            elif status == "LOW_CONFIDENCE":
-                if "ai_debug" in data:
-                    dbg = data["ai_debug"]
-                    ai_reason = dbg.get("reason", "-")
-                    ai_reform = dbg.get("reformulated_question", "-")
-                    print(f"AI Reason       : {ai_reason}")
-                    print(f"Reformulated Q  : {ai_reform}")
+            ai_reason = meta.get("ai_reason", "-")
+            ai_reform = meta.get("ai_reformulated", "-")
+            print(f"AI Reason       : {ai_reason}")
+            print(f"Reformulated Q  : {ai_reform}")
 
             # 5️⃣ HASIL AKHIR
             print_step("📤 OUTPUT AKHIR")
             accepted = 0
             rejected = 0
-            dense_top = 0.0
-            category = "-"
-            final_q = question
+            dense_top = meta.get("dense_score_top", 0)
+            final_top = meta.get("final_score_top", 0)
+            category = meta.get("category", "-")
+            final_q = meta.get("final_question", question)
+            ai_reform_q = meta.get("ai_reformulated", "-")
 
             if status == "SUCCESS":
-                meta = data["data"]["metadata"]
-                category = meta.get("category", "-")
-                final_q = meta.get("final_question", question)
-                dense_top = meta.get("dense_score_top", 0)
                 print(f"STATUS        : SUCCESS")
                 print(f"Original Q    : {meta.get('original_question', '-')}")
                 print(f"Final Q       : {final_q}")
                 print(f"Category      : {category}")
-                print(f"AI Reform     : {meta.get('ai_reformulated', '-')}")
-                results = data["data"]["similar_questions"]
-                print_candidates(results)
-                accepted = len(results)
-            elif status == "LOW_CONFIDENCE":
+                print(f"AI Reform     : {ai_reform_q}")
+                print_candidates(data["data"]["similar_questions"])
+                accepted = len(data["data"]["similar_questions"])
+            else:
                 print("STATUS        : LOW CONFIDENCE")
                 print(f"Message       : {data.get('message', '-')}")
-                rejected = len(data.get("debug_rejected", []))
-                if "debug_rejected" in data:
-                    print_candidates(data["debug_rejected"])
 
             # 6️⃣ TIMING
             print_step("⏱️  WAKTU EKSEKUSI")
             print_timing(timing)
+            print(f"🕒 Total Processing Time (client): {total_elapsed}s")
 
             print("\n" + "=" * 70 + "\n")
 
@@ -199,10 +179,13 @@ def main():
                 "Status": status,
                 "Original Question": question,
                 "Final Question": final_q,
+                "Question Sent to RAG": final_q if status == "SUCCESS" else "-",
+                "AI Reformulated Question": ai_reform_q,
                 "Category": category,
                 "Dense Top": dense_top,
+                "Final Score Top": final_top,
                 "AI Reason": ai_reason,
-                "AI Reformulated": ai_reform,
+                "AI Reformulated": ai_reform_q,
                 "Total Candidates": accepted + rejected,
                 "Accepted": accepted,
                 "Rejected": rejected,
@@ -210,7 +193,8 @@ def main():
                 "AI Relevance (s)": timing.get("ai_relevance_sec", 0),
                 "Embedding (s)": timing.get("embedding_sec", 0),
                 "Qdrant (s)": timing.get("qdrant_sec", 0),
-                "Total Time (s)": timing.get("total_sec", 0)
+                "Total Time (s)": timing.get("total_sec", 0),
+                "Total Processing Time (s)": total_elapsed
             }
 
             log_to_excel(entry)
