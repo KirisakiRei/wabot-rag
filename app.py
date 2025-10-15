@@ -396,9 +396,9 @@ def search():
             dense = float(h.score)
             overlap = keyword_overlap(question, h.payload["question"])
             note, accepted = "-", False
-            if dense >= 0.88:
+            if dense >= 0.90:
                 accepted, note = True, "auto_accepted_by_dense"
-            elif 0.82 <= dense < 0.88 and overlap >= 0.25:
+            elif 0.86 <= dense <= 0.89 and overlap >= 0.25:
                 accepted, note = True, "accepted_by_overlap"
             item = {
                 "question": h.payload["question"],
