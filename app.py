@@ -133,21 +133,6 @@ def keyword_overlap(a, b):
     return len(A & B) / len(A | B) if A and B else 0.0
 
 
-def shorten_question(text):
-    if not text:
-        return text
-    text = re.sub(r"yang diperlukan untuk\s*", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"yang dibutuhkan untuk\s*", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"yang harus dilakukan\s*", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"untuk\s+mengurus\s+", "mengurus ", text,
-                  flags=re.IGNORECASE)
-    text = re.sub(r"\s+", " ", text).strip()
-    words = text.split()
-    if len(words) > 15:
-        text = " ".join(words[:15]) + "..."
-    return text.strip()
-
-
 # ==========================================================
 # 🔹 HARD FILTER LOKAL
 # ==========================================================
@@ -230,7 +215,7 @@ Petunjuk:
    - Kebijakan atau program Pemerintah Kota Medan
 
 3. Mark tidak valid jika:
-   - Membahas daerah di luar Kota Medan (Jakarta, Bandung, Surabaya, Siantar, Tebing Tinggi, Kisaran, Deli Serdang, dll)
+   - Membahas daerah di luar Medan
    - Membahas figur publik non-pemerintah (selebriti, influencer, dll)
    - Membahas topik pribadi, gosip, atau hal yang tidak berkaitan pemerintahan
    - Pertanyaan tidak jelas, ambigu, atau tidak relevan dengan Pemko Medan
@@ -248,6 +233,7 @@ CONTOH OUTPUT:
 
 JANGAN BERIKAN PENJELASAN DI LUAR JSON.
 """
+
 
         payload = {
             "model": "meta/llama-4-maverick-instruct",
@@ -267,8 +253,6 @@ JANGAN BERIKAN PENJELASAN DI LUAR JSON.
             "reason": "AI tidak mengembalikan JSON",
             "clean_question": question
         }
-
-        logger.info(f"[AI FILTER] ✅ Valid: {parsed['valid']} | Reason: {parsed['reason']}")
         return parsed
 
     except Exception as e:
@@ -316,16 +300,9 @@ maks. 12 kata.
         resp = requests.post(url, headers=headers, json=payload, timeout=15)
         content = resp.json()["choices"][0]["message"]["content"].strip()
         match = re.search(r"\{.*\}", content, re.DOTALL)
-
         parsed = json.loads(match.group(0)) if match else {
             "relevant": True, "reason": "-", "reformulated_question": ""
         }
-
-        reform = parsed.get("reformulated_question", "").strip()
-        if len(reform.split()) > 12:
-            parsed["reformulated_question"] = " ".join(reform.split()[:12]) + "..."
-
-        logger.info(f"[AI RELEVANCE] ✅ Relevant: {parsed['relevant']} | Reason: {parsed['reason']}")
         return parsed
 
     except Exception as e:
@@ -390,23 +367,31 @@ def search():
             relevance = ai_check_relevance(user_q, dense_hits[0].payload["question"])
         t_post_time = time.time() - t_post
 
-        # ---------- SCORING ----------
+        # ---------- SCORING + FINAL SCORE ----------
         results, rejected = [], []
         for h in dense_hits:
             dense = float(h.score)
             overlap = keyword_overlap(question, h.payload["question"])
+            final_score = round((0.65 * dense) + (0.35 * overlap), 3)
+
             note, accepted = "-", False
             if dense >= 0.90:
                 accepted, note = True, "auto_accepted_by_dense"
             elif 0.86 <= dense <= 0.89 and overlap >= 0.25:
                 accepted, note = True, "accepted_by_overlap"
+
             item = {
                 "question": h.payload["question"],
                 "dense_score": dense,
                 "overlap_score": overlap,
+                "final_score": final_score,
                 "note": note
             }
             (results if accepted else rejected).append(item)
+
+        # Urutkan berdasarkan final_score
+        results = sorted(results, key=lambda x: x["final_score"], reverse=True)
+        rejected = sorted(rejected, key=lambda x: x["final_score"], reverse=True)
 
         total_time = time.time() - t0
 
@@ -422,7 +407,8 @@ def search():
                     "final_question": question,
                     "category": category["name"] if category else "Global",
                     "ai_reason": relevance.get("reason", "-"),
-                    "ai_reformulated": relevance.get("reformulated_question", "-")
+                    "ai_reformulated": relevance.get("reformulated_question", "-"),
+                    "final_score_top": results[0]["final_score"] if results else "-"
                 }
             },
             "timing": {
@@ -442,12 +428,6 @@ def search():
             "detail": str(e)
         }), 500
 
-
-# ==========================================================
-# 🔹 RUN SERVER
-# ==========================================================
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
 
 
 # ==========================================================
@@ -559,3 +539,9 @@ def sync_data():
     except Exception as e:
         logger.error(f"Error in sync_data: {str(e)}", exc_info=True)
         return error_response("ServerError", "Kesalahan internal saat sinkronisasi", detail=str(e))
+
+# ==========================================================
+# 🔹 RUN SERVER
+# ==========================================================
+if __name__ == "__main__":
+    app.run(host=CONFIG["api"]["host"], port=CONFIG["api"]["port"], debug=True)
