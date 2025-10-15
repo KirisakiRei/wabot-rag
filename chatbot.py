@@ -2,7 +2,7 @@ import requests
 import json
 import time
 import os
-import pandas as pd
+from openpyxl import Workbook, load_workbook
 from datetime import datetime
 
 API_URL = "http://localhost:5000/api/search"
@@ -43,11 +43,11 @@ def print_candidates(results):
     print("-" * 70)
 
 # ==========================================================
-# 🔹 Fungsi Logging ke Excel
+# 🔹 Fungsi Logging ke Excel (Tanpa Pandas)
 # ==========================================================
 def log_to_excel(entry):
     """
-    Menyimpan setiap hasil pipeline ke file Excel chatbot_log.xlsx
+    Menyimpan setiap hasil pipeline ke file Excel chatbot_log.xlsx tanpa pandas
     """
     columns = [
         "Timestamp", "Status", "Original Question", "Final Question", "Category",
@@ -56,16 +56,36 @@ def log_to_excel(entry):
         "AI Filter (s)", "AI Relevance (s)", "Embedding (s)", "Qdrant (s)", "Total Time (s)"
     ]
 
-    # Convert single log jadi DataFrame
-    df_new = pd.DataFrame([entry], columns=columns)
-
     # Jika file belum ada → buat baru
     if not os.path.exists(LOG_FILE):
-        df_new.to_excel(LOG_FILE, index=False)
-    else:
-        df_existing = pd.read_excel(LOG_FILE)
-        df_combined = pd.concat([df_existing, df_new], ignore_index=True)
-        df_combined.to_excel(LOG_FILE, index=False)
+        wb = Workbook()
+        ws = wb.active
+        ws.append(columns)
+        wb.save(LOG_FILE)
+
+    # Buka workbook dan tambahkan baris baru
+    wb = load_workbook(LOG_FILE)
+    ws = wb.active
+    row_data = [
+        entry.get("Timestamp", ""),
+        entry.get("Status", ""),
+        entry.get("Original Question", ""),
+        entry.get("Final Question", ""),
+        entry.get("Category", ""),
+        entry.get("Dense Top", ""),
+        entry.get("AI Reason", ""),
+        entry.get("AI Reformulated", ""),
+        entry.get("Total Candidates", ""),
+        entry.get("Accepted", ""),
+        entry.get("Rejected", ""),
+        entry.get("AI Filter (s)", ""),
+        entry.get("AI Relevance (s)", ""),
+        entry.get("Embedding (s)", ""),
+        entry.get("Qdrant (s)", ""),
+        entry.get("Total Time (s)", "")
+    ]
+    ws.append(row_data)
+    wb.save(LOG_FILE)
 
 # ==========================================================
 # 🔹 Fungsi Utama
